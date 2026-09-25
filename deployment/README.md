@@ -23,8 +23,10 @@ Set the model and API key later through the protected settings page.
 ## Build and install
 
 Build from this repository root with Docker Buildx for `linux/amd64`, using
-`deployment/Dockerfile`. Pin the resulting image by its local SHA256 ID in
-`/etc/inkos/.env` as `INKOS_IMAGE=sha256:...`. Transfer with `docker save`/`docker load`.
+`deployment/Dockerfile`. Transfer with `docker save`/`docker load`, then inspect
+the image on the destination host and pin its repository digest in `/etc/inkos/.env`
+as `INKOS_IMAGE=inkos@sha256:...`. Docker storage backends can report different
+manifest and configuration IDs; compare source labels and RootFS layer hashes.
 The Dockerfile pins Node 22 and pnpm 10, builds core, studio, and CLI, and executes
 the verifier tests. Run standalone verifier tests with `npm ci && npm test` inside
 `deployment/` using Node 22.
