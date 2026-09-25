@@ -37,6 +37,27 @@ Offline tests establish code behavior, not live model compliance or novel qualit
 Inkos must still perform story settlement/revision and audit before continuation.
 No unreviewed chapter is automatically published by this change.
 
+## Follow-up: audit state and settlement notes
+
+A standalone audit could mark a state-degraded chapter ready while leaving its
+repair metadata unresolved. Audits now preserve the state-repair blocker and
+refresh only the underlying audit outcome. Successful resynchronization clears
+legacy repair metadata even when an older audit already overwrote the status;
+it preserves that audit's explicit outcome instead of restoring stale metadata.
+
+The settler instructions now explain that resolve/defer ID arrays do not update
+notes, and require a matching upsert with body-grounded notes. This is a model
+instruction correction, not proof that a future live settlement will pass.
+No manuscript, story-state file, model setting, or audit threshold is edited.
+
+Three initial regression failures reproduced audit masking and stale metadata
+cleanup. Independent review found mismatched legacy audit outcomes; both cases
+failed before correction. Five focused cases now pass. Full-suite verification
+passed core 1,874, Studio 583, and CLI 233 before that review correction; the final
+core rerun passed 1,875 tests and the full application build passed. Independent
+recheck found no remaining required correction. Live deployment and model
+acceptance must still be verified separately.
+
 ### Verified rollout — 2026-09-25 18:38 MYT
 
 - Source revision: `a3590c7970c9572cf37bcc6fee00ff55b24b8930`.

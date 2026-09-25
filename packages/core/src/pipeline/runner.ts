@@ -1315,16 +1315,27 @@ export class PipelineRunner {
 
     // Update index with audit result
     const index = await this.state.loadChapterIndex(bookId);
-    const updated = index.map((ch) =>
-      ch.number === targetChapter
-        ? {
-            ...ch,
-            status: (result.passed ? "ready-for-review" : "audit-failed") as ChapterMeta["status"],
-            updatedAt: new Date().toISOString(),
-            auditIssues: result.issues.map((i) => `[${i.severity}] ${i.description}`),
-          }
-        : ch,
-    );
+    const updated = index.map((ch) => {
+      if (ch.number !== targetChapter) return ch;
+      const repair = parseStateDegradedReviewNote(ch.reviewNote);
+      const pendingStateRepair = ch.status === "state-degraded" || repair !== null;
+      const baseStatus = result.passed ? "ready-for-review" : "audit-failed";
+      const auditIssues = result.issues.map((i) => `[${i.severity}] ${i.description}`);
+      // A prose audit cannot certify or repair the derived story state.
+      return {
+        ...ch,
+        status: (pendingStateRepair ? "state-degraded" : baseStatus) as ChapterMeta["status"],
+        updatedAt: new Date().toISOString(),
+        auditIssues: [...new Set([...auditIssues, ...(repair?.injectedIssues ?? [])])],
+        ...(pendingStateRepair ? {
+          reviewNote: JSON.stringify({
+            kind: "state-degraded",
+            baseStatus,
+            injectedIssues: repair?.injectedIssues ?? [],
+          }),
+        } : {}),
+      };
+    });
     await this.state.saveChapterIndex(bookId, updated);
     const latestChapter = index.length > 0 ? Math.max(...index.map((chapter) => chapter.number)) : targetChapter;
     if (targetChapter === latestChapter) {
@@ -2628,12 +2639,15 @@ export class PipelineRunner {
     await this.state.snapshotState(bookId, targetChapter);
     await this.syncCurrentStateFactHistory(bookId, targetChapter);
 
+    const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
+    const hadPendingStateRepair = targetMeta.status === "state-degraded" || degradedMetadata !== null;
+    // Legacy audits changed status but left baseStatus stale; trust their explicit
+    // audit outcome until the repair marker is once again the visible status.
     const finalStatus: "ready-for-review" | "audit-failed" = targetMeta.status === "state-degraded"
       ? resolveStateDegradedBaseStatus(targetMeta)
-      : "ready-for-review";
+      : targetMeta.status === "audit-failed" ? "audit-failed" : "ready-for-review";
 
-    if (targetMeta.status === "state-degraded") {
-      const degradedMetadata = parseStateDegradedReviewNote(targetMeta.reviewNote);
+    if (hadPendingStateRepair) {
       const injectedIssues = new Set(degradedMetadata?.injectedIssues ?? []);
       index[targetIndex] = {
         ...targetMeta,
@@ -2645,7 +2659,7 @@ export class PipelineRunner {
     } else {
       index[targetIndex] = {
         ...targetMeta,
-        status: "ready-for-review",
+        status: finalStatus,
         updatedAt: new Date().toISOString(),
       };
     }

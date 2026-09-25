@@ -157,7 +157,7 @@ function buildSettlerOutputFormat(gp: GenreProfile): string {
 4. 只有确认当前伏笔池没有同一叙事承诺时，brand-new unresolved thread 才写进 newHookCandidates
 5. 如果旧 hook 只是被提到、没有真实状态变化，把它放进 mention，不要更新 lastAdvancedChapter
 6. 如果本章推进了旧 hook，lastAdvancedChapter 必须等于当前章号
-7. 如果回收或延后 hook，必须放在 resolve / defer 数组里
+7. 如果回收或延后 hook，必须放在 resolve / defer 数组里；这些数组只更新状态，不更新备注。必须同时在 upsert 中写入同一个既有 hookId、对应的 resolved / deferred 状态、当前 lastAdvancedChapter，以及依据正文更新的 notes。回收备注应记录本章已确认的结果，不能沿用与正文冲突的待验证描述；延后备注应记录仍未解决的内容。不要编造正文没有交代的答案
 8. chapterSummary.chapter 必须等于当前章节号`;
 }
 

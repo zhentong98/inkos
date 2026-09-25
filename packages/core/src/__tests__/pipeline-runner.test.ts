@@ -2833,6 +2833,43 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it.each(["state-degraded", "ready-for-review"] as const)(
+    "keeps unresolved state repair visible after a passing audit from %s",
+    async (status) => {
+      const { root, runner, state, bookId } = await createRunnerFixture({});
+      const now = "2026-03-19T00:00:00.000Z";
+      const issue = "[warning] Persisted state still contradicts the chapter.";
+      const reviewNote = JSON.stringify({
+        kind: "state-degraded",
+        baseStatus: "audit-failed",
+        injectedIssues: [issue],
+      });
+      try {
+        await writeFile(join(state.bookDir(bookId), "chapters", "0001_Test.md"),
+          "# Test\n\nThe traveller returned home with the missing parcel.", "utf-8");
+        await state.saveChapterIndex(bookId, [{
+          number: 1, title: "Test", status, wordCount: 55,
+          createdAt: now, updatedAt: now, auditIssues: [issue],
+          lengthWarnings: [], reviewNote,
+        }]);
+        vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+          .mockResolvedValue(createAuditResult({ passed: true }));
+
+        const audit = await runner.auditDraft(bookId, 1);
+        const [chapter] = await state.loadChapterIndex(bookId);
+        expect(audit.passed).toBe(true);
+        expect(chapter?.status).toBe("state-degraded");
+        expect(chapter?.auditIssues).toContain(issue);
+        expect(JSON.parse(chapter!.reviewNote!)).toEqual({
+          kind: "state-degraded", baseStatus: "ready-for-review", injectedIssues: [issue],
+        });
+        await expect(runner.writeNextChapter(bookId)).rejects.toThrow(/state-degraded/i);
+      } finally {
+        await rm(root, { recursive: true, force: true });
+      }
+    },
+  );
+
   it("repairs the latest state-degraded chapter from persisted body without rewriting it", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
     });
@@ -2916,7 +2953,12 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
-  it("syncs the latest edited chapter body back into truth files without requiring state-degraded status", async () => {
+  it.each([
+    { status: "approved", staleBaseStatus: undefined, expectedStatus: "ready-for-review" },
+    { status: "ready-for-review", staleBaseStatus: "audit-failed", expectedStatus: "ready-for-review" },
+    { status: "audit-failed", staleBaseStatus: "ready-for-review", expectedStatus: "audit-failed" },
+  ] as const)("syncs the latest chapter and clears legacy repair metadata ($status)", async ({ status, staleBaseStatus, expectedStatus }) => {
+    const hasLegacyRepairNote = staleBaseStatus !== undefined;
     const { root, runner, state, bookId } = await createRunnerFixture({
       externalContext: "把注意力收回师债主线。",
     });
@@ -2951,12 +2993,15 @@ describe("PipelineRunner", () => {
       state.saveChapterIndex(bookId, [{
         number: 1,
         title: "夜灯",
-        status: "approved" as ChapterMeta["status"],
+        status,
         wordCount: 55,
         createdAt: now,
         updatedAt: now,
-        auditIssues: [],
+        auditIssues: hasLegacyRepairNote ? ["[warning] stale state"] : [],
         lengthWarnings: [],
+        ...(hasLegacyRepairNote ? { reviewNote: JSON.stringify({
+          kind: "state-degraded", baseStatus: staleBaseStatus, injectedIssues: ["[warning] stale state"],
+        }) } : {}),
       }]),
     ]);
 
@@ -2991,7 +3036,7 @@ describe("PipelineRunner", () => {
     ).resyncChapterArtifacts(bookId, 1);
     const savedIndex = await state.loadChapterIndex(bookId);
 
-    expect(result.status).toBe("ready-for-review");
+    expect(result.status).toBe(expectedStatus);
     expect(result.chapterNumber).toBe(1);
     expect(settleSpy).toHaveBeenCalledWith(expect.objectContaining({
       allowReapply: true,
@@ -3000,7 +3045,9 @@ describe("PipelineRunner", () => {
     }));
     await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe("synced state");
     await expect(readFile(join(storyDir, "pending_hooks.md"), "utf-8")).resolves.toBe("synced hooks");
-    expect(savedIndex[0]?.status).toBe("ready-for-review");
+    expect(savedIndex[0]?.status).toBe(expectedStatus);
+    expect(savedIndex[0]?.reviewNote).toBeUndefined();
+    expect(savedIndex[0]?.auditIssues).not.toContain("[warning] stale state");
 
     await rm(root, { recursive: true, force: true });
   });
