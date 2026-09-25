@@ -36,3 +36,21 @@ global model configuration, audit thresholds, or other shared services.
 Offline tests establish code behavior, not live model compliance or novel quality.
 Inkos must still perform story settlement/revision and audit before continuation.
 No unreviewed chapter is automatically published by this change.
+
+### Verified rollout — 2026-09-25 18:38 MYT
+
+- Source revision: `a3590c7970c9572cf37bcc6fee00ff55b24b8930`.
+- Destination image: `inkos@sha256:b5badd4d264d70e9bb74b81a3b2b9bfde2f1c14354e66b8f7e7d632662ffc282`.
+- All eight RootFS layer hashes matched the local build. Image build and five
+  Access verifier tests passed.
+- Encrypted backup `fd9e7229` saved before rollout. Previous image and Compose
+  selection retained at `/etc/inkos/rollback-before-a3590c79`.
+- Only `inkos-app-1` changed container identity. Dedicated origin configuration
+  passed validation and was gracefully reloaded; shared services were unchanged.
+- Application healthy, zero restarts, no published ports. Installed-module
+  regression checks passed without model calls or data writes.
+- All 204 protected book/configuration file hashes remained identical.
+- Anonymous writing-site request returned 302 (Access login); reading site 200.
+- Both existing novel sessions were idle. No new paid repair was submitted by
+  this rollout; saved chapter-2 audit states are intentionally unchanged until
+  Inkos performs another authorized settlement/revision.
