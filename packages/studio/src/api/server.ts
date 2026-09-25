@@ -4602,6 +4602,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       playMode: reqPlayMode,
       model: reqModel,
       service: reqService,
+      reasoning: reqReasoning,
     } = await c.req.json<{
       instruction: string;
       activeBookId?: string;
@@ -4617,7 +4618,19 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       playMode?: string;
       model?: string;
       service?: string;
+      reasoning?: unknown;
     }>();
+    // Never silently ignore a requested reasoning level or apply it to another service.
+    if (reqReasoning !== undefined && (
+      typeof reqReasoning !== "string"
+      || !["low", "medium", "high"].includes(reqReasoning)
+      || reqService !== "google"
+      || typeof reqModel !== "string"
+      || reqModel.replace(/^models\//, "") !== "gemini-3.8-flash"
+    )) {
+      throw new ApiError(400, "INVALID_REASONING", "Explicit reasoning requires Google Gemini 3.8 Flash and low, medium, or high");
+    }
+    const reasoning = reqReasoning as "low" | "medium" | "high" | undefined;
     const sessionId = reqSessionId;
     if (!instruction?.trim()) {
       return c.json({ error: "No instruction provided" }, 400);
@@ -4647,6 +4660,9 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
     try {
       // Load config + create LLM client (pipeline created after model resolution)
       const config = await loadCurrentProjectConfig({ requireApiKey: false });
+      if (reasoning && Object.keys(config.modelOverrides ?? {}).length > 0) {
+        throw new ApiError(400, "REASONING_MODEL_OVERRIDE_CONFLICT", "Explicit reasoning requires a single model across all workers; remove conflicting worker model overrides first");
+      }
       const client = createLLMClient(config.llm);
 
       const loadedBookSession = await loadBookSession(root, sessionId);
@@ -4800,7 +4816,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         resolvedApiKey = client._apiKey;
       }
 
-      const model = resolvedModel!;
+      const model = reasoning ? { ...resolvedModel!, reasoning: true } : resolvedModel!;
       const agentApiKey = resolvedApiKey;
       const configuredEntry = reqService ? await resolveConfiguredServiceEntry(root, reqService) : undefined;
 
@@ -4810,6 +4826,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
       const pipelineClient = (reqService && reqModel && resolvedModel)
         ? createLLMClient({
             ...config.llm,
+            reasoning,
             service: configuredEntry?.service ?? reqService,
             model: reqModel,
             apiKey: resolvedApiKey ?? "",
@@ -5026,6 +5043,7 @@ export function createStudioServer(initialConfig: ProjectConfig, root: string, o
         {
           model,
           apiKey: agentApiKey,
+          reasoning,
           pipeline,
           ...(backgroundTask
             ? {

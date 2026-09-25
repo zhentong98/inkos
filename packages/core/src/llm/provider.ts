@@ -294,6 +294,7 @@ export interface LLMClient {
      */
     readonly maxTokensCap?: number | null;
     readonly thinkingBudget: number;
+    readonly reasoning?: "low" | "medium" | "high";
     readonly extra: Record<string, unknown>;
   };
 }
@@ -301,12 +302,16 @@ export interface LLMClient {
 // === Factory ===
 
 export function createLLMClient(config: LLMConfig): LLMClient {
+  if (config.reasoning && (config.service !== "google" || config.model.replace(/^models\//, "") !== "gemini-3.8-flash")) {
+    throw new Error("Explicit reasoning requires Google Gemini 3.8 Flash");
+  }
   // C1 (v2.0.0)：config.maxTokens / maxTokensCap 已删除；defaults.maxTokens 完全从 modelCard 推导。
   const _earlyCard = lookupModel(config.service ?? "custom", config.model);
   const defaults = {
     temperature: config.temperature ?? 0.7,
     maxTokens: _earlyCard?.maxOutput ?? UNKNOWN_MODEL_FALLBACK_MAX_TOKENS,
     thinkingBudget: config.thinkingBudget ?? 0,
+    ...(config.reasoning ? { reasoning: config.reasoning } : {}),
     extra: config.extra ?? {},
   };
 
@@ -345,10 +350,10 @@ export function createLLMClient(config: LLMConfig): LLMClient {
     provider: piProvider,
     baseUrl,
     // 注意：piModel.reasoning 是"激活 reasoning 模式"标志（会让 pi-ai 把 system 改成 developer role 等），
-    // 不是"模型能力"标签。只有用户显式配了 thinkingBudget > 0 才启用 reasoning mode。
+    // 不是"模型能力"标签。只有用户显式设置 reasoning 或 thinkingBudget > 0 才启用 reasoning mode。
     // 千万不要从 lobe abilities.reasoning 自动推导，否则 Moonshot 这类不支持 developer role 的服务
     // 会把 content 吃掉，只返回 reasoning_content（见 R4 bug 1 诊断）。
-    reasoning: (config.thinkingBudget ?? 0) > 0,
+    reasoning: Boolean(config.reasoning) || (config.thinkingBudget ?? 0) > 0,
     input: ["text"] as ("text" | "image")[],
     cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 },
     contextWindow: modelCard?.contextWindowTokens ?? 128_000,
@@ -1471,7 +1476,7 @@ export async function chatCompletion(
       async (attempt) => {
         signal?.throwIfAborted();
         const traceHeaders = agentTrajectoryHeaders(client._piModel?.baseUrl, modelCall, attempt, {
-          effort: client.defaults.thinkingBudget > 0 ? "enabled" : "disabled",
+          effort: client.defaults.reasoning ?? (client.defaults.thinkingBudget > 0 ? "enabled" : "disabled"),
           ...(client.defaults.thinkingBudget > 0
             ? { budgetTokens: client.defaults.thinkingBudget }
             : {}),
@@ -1597,6 +1602,7 @@ async function chatCompletionViaPiAi(
     temperature: resolved.temperature,
     maxTokens: resolved.maxTokens,
     apiKey: client._apiKey,
+    ...(client.defaults.reasoning ? { reasoning: client.defaults.reasoning } : {}),
     headers: mergeUserAgent({ ...(piModel.headers ?? {}), ...traceHeaders }),
     signal,
   };

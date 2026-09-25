@@ -121,6 +121,8 @@ export interface AgentSessionConfig {
   model: Model<Api> | { provider: string; modelId: string };
   /** Optional API key. When omitted, falls back to env-based key lookup. */
   apiKey?: string;
+  /** Per-request reasoning; omission restores the normal default. */
+  reasoning?: "low" | "medium" | "high";
   /** Allow the read tool to read absolute paths outside projectRoot/books. Defaults to false; set INKOS_AGENT_ALLOW_SYSTEM_READ=1 to enable. */
   allowSystemFileRead?: boolean;
   /** Optional listener for streaming events (for SSE forwarding). */
@@ -188,6 +190,7 @@ interface CachedAgent {
   language: string;
   modelIdentity: string;
   apiKey: string | undefined;
+  reasoning: AgentSessionConfig["reasoning"];
   allowSystemFileRead: boolean;
   backgroundTaskContext: string | undefined;
   suppressProductionTools: boolean;
@@ -1083,6 +1086,7 @@ async function runAgentSessionUnlocked(
     const skillResolutionChanged = cached.skillResolutionKey !== skillResolutionKey;
     const languageChanged = cached.language !== language;
     const apiKeyChanged = cached.apiKey !== config.apiKey;
+    const reasoningChanged = cached.reasoning !== config.reasoning;
     const readPermissionChanged = cached.allowSystemFileRead !== allowSystemFileRead;
     const playWorldChanged = cached.playWorldExists !== playWorldExists;
     const backgroundTaskContextChanged = cached.backgroundTaskContext !== config.backgroundTaskContext;
@@ -1100,6 +1104,7 @@ async function runAgentSessionUnlocked(
       skillResolutionChanged ||
       languageChanged ||
       apiKeyChanged ||
+      reasoningChanged ||
       readPermissionChanged ||
       playWorldChanged ||
       backgroundTaskContextChanged ||
@@ -1187,6 +1192,7 @@ async function runAgentSessionUnlocked(
     const agent = new Agent({
       initialState: {
         model,
+        ...(config.reasoning ? { thinkingLevel: config.reasoning } : {}),
         systemPrompt: config.backgroundTaskContext
           ? `${baseSystemPrompt}\n\n${config.backgroundTaskContext}`
           : baseSystemPrompt,
@@ -1231,6 +1237,7 @@ async function runAgentSessionUnlocked(
       language,
       modelIdentity: requestedModelIdentity,
       apiKey: config.apiKey,
+      reasoning: config.reasoning,
       allowSystemFileRead,
       backgroundTaskContext: config.backgroundTaskContext,
       suppressProductionTools,

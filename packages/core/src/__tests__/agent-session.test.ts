@@ -402,6 +402,16 @@ describe("runAgentSession cache — bookId switch", () => {
     )).toBe(true);
   });
 
+  it("passes request reasoning to the agent and clears it on the next turn", async () => {
+    const model = { provider: "google", id: "gemini-3.8-flash", api: "google-generative-ai", reasoning: true } as any;
+    const config = { sessionId: "s1", bookId: "book-a", language: "zh", pipeline: {} as any, projectRoot, model };
+    await runAgentSession({ ...config, reasoning: "high" } as any, "hi");
+    expect(streamCalls.at(-1)?.options.reasoning).toBe("high");
+    await runAgentSession(config, "hi2");
+    expect(streamCalls.at(-1)?.options.reasoning).toBeUndefined();
+    expect(agentInstances).toHaveLength(2);
+  });
+
   it("reuses Agent when bookId unchanged on same sessionId", async () => {
     const model = { provider: "x", id: "y", api: "anthropic-messages" } as any;
     const pipeline = {} as any;

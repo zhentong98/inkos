@@ -3247,6 +3247,50 @@ describe("createStudioServer daemon lifecycle", () => {
     await expect(access(join(root, storedPath as string))).resolves.toBeUndefined();
   });
 
+  it("passes explicit Google High reasoning to both the pipeline and chat agent", async () => {
+    resolveServiceModelMock.mockResolvedValue({ model: { id: "models/gemini-3.8-flash", provider: "google", api: "google-generative-ai", reasoning: false }, apiKey: "test-key" });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "你好", sessionId: "agent-session-1", service: "google", model: "models/gemini-3.8-flash", reasoning: "high" }),
+    });
+    expect(response.status).toBe(200);
+    expect(createLLMClientMock).toHaveBeenCalledWith(expect.objectContaining({ service: "google", model: "models/gemini-3.8-flash", reasoning: "high" }));
+    expect(runAgentSessionMock).toHaveBeenCalledWith(expect.objectContaining({ reasoning: "high", model: expect.objectContaining({ reasoning: true }) }), "你好");
+  });
+
+  it.each([
+    { service: "google", model: "gemini-3.8-flash", reasoning: "unknown" },
+    { service: "deepseek", model: "deepseek-v4-pro", reasoning: "high" },
+    { service: "google", model: "gemini-2.5-flash", reasoning: "high" },
+    { service: "google", model: 38, reasoning: "high" },
+    { service: "google", model: "gemini-3.8-flash", reasoning: ["high"] },
+  ])("rejects unsupported explicit reasoning before any model call: %j", async (selection) => {
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "测试", sessionId: "agent-session-1", ...selection }),
+    });
+    expect(response.status).toBe(400);
+    expect(resolveServiceModelMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
+  it("rejects explicit reasoning when worker overrides could change the requested model", async () => {
+    loadProjectConfigMock.mockResolvedValue({ ...cloneProjectConfig(), modelOverrides: { auditor: "another-model" } });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "测试", sessionId: "agent-session-1", service: "google", model: "gemini-3.8-flash", reasoning: "high" }),
+    });
+    expect(response.status).toBe(400);
+    expect(resolveServiceModelMock).not.toHaveBeenCalled();
+    expect(runAgentSessionMock).not.toHaveBeenCalled();
+  });
+
   it("executes confirmed create-book action directly without asking the chat model to call tools", async () => {
     loadBookSessionMock.mockResolvedValueOnce({
       sessionId: "agent-session-1",

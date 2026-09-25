@@ -30,6 +30,7 @@ export const LLMConfigSchema = z.object({
   proxyUrl: z.string().url().optional(),
   temperature: z.number().min(0).max(2).default(0.7),
   thinkingBudget: z.number().int().min(0).default(0),
+  reasoning: z.enum(["low", "medium", "high"]).optional(),
   extra: z.record(z.unknown()).optional(),
   headers: z.record(z.string()).optional(),
   apiFormat: z.enum(["chat", "responses"]).default("chat"),
