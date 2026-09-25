@@ -51,3 +51,31 @@ The origin verifier is an additional small service because upstream Studio has n
 login protection. Full novel generation, export of generated content, and provider
 connectivity await the user's model configuration. No full upstream unit suite was
 claimed; validation focused on unchanged application build and new deployment behavior.
+
+## Follow-up repair — 2026-09-25 12:55 MYT
+
+- Application/deployment revision `e6a7a005d6d86d1ffcfaf036aad8946943eafaf0`,
+  pushed to the existing fork branch `codex/private-server-deploy`.
+- Fixed successful `propose_action` cards incorrectly returning 502 when their
+  quoted instructions mention an earlier failure. Explicit tool errors are retained.
+- Regression reproduced before the fix (two expected-200 responses were 502).
+  After the fix, all 162 server API tests and all 583 Studio tests in 59 files
+  passed. Core TypeScript and Studio server builds passed. Independent read-only
+  code and deployment-delta reviews reported no actionable findings. This is not
+  a claim that the entire monorepo test suite was run.
+- The amd64 image build, including the five Access verifier tests, passed.
+  Server image: `inkos@sha256:8779f101ca9a270797a97eeb2e77fba69709228be0a16cb95d4481c4fcca1ba3`.
+  All eight RootFS layers and the source-revision label matched the local image.
+- Encrypted pre-update snapshot `813e49e8` saved. Previous Compose and image
+  setting retained in `/etc/inkos/rollback-before-e6a7a005`; old image retained.
+- Only `inkos-app-1` changed container identity. The dedicated origin was validated
+  and gracefully reloaded; shared services were not restarted. New app healthy,
+  zero restarts, no published ports; anonymous public access still returned 302.
+- Model stream idle timeout is now a bounded 600000 ms. The earlier Claude setup
+  request was cancelled at the former 180000 ms deadline; OpenRouter recorded
+  6120 reasoning tokens and no final completion. Short probes with Responses and
+  Chat protocols both returned OK. This does not establish that Cloudflare 524
+  request timeouts are resolved. The new long-running creation remains a separate
+  acceptance check.
+- Generated DeepSeek chapters and configuration persisted. Chapter 2 remains
+  blocked on state reconstruction; no successful six-chapter publication is claimed.
