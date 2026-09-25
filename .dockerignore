@@ -1,0 +1,14 @@
+.git
+.worktrees
+.superpowers
+**/node_modules
+**/dist
+.env*
+.inkos
+books
+worlds
+dramas
+storyboards
+translations
+inkos.json
+prompt

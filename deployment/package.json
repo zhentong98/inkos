@@ -1,0 +1,1 @@
+{"name":"inkos-private-deployment","private":true,"type":"module","dependencies":{"jose":"6.2.2"},"scripts":{"test":"node --test access-check.test.mjs"}}

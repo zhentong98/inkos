@@ -1,0 +1,10 @@
+[Unit]
+Description=Consistent encrypted local backup of Inkos
+After=docker.service
+Requires=docker.service
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /etc/inkos/backup.sh
+Nice=10
+IOSchedulingClass=idle
+TimeoutStartSec=30min

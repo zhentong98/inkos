@@ -1,0 +1,7 @@
+[Unit]
+Description=Daily Inkos backup
+[Timer]
+OnCalendar=*-*-* 05:17:00 Asia/Kuala_Lumpur
+Persistent=true
+[Install]
+WantedBy=timers.target
