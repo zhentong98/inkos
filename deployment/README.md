@@ -1,7 +1,7 @@
 # Private Inkos server deployment
 
 This deploys the user's `zhentong98/inkos` fork, initially based on
-`091048383f411eb99948a8764f42b6fd13006f9b` (1.8.0). No upstream product code is changed.
+`091048383f411eb99948a8764f42b6fd13006f9b` (1.8.0). The deployment branch includes the narrowly scoped Studio proposal-status fix described below.
 The approved target is `https://write.liewchentong.com` on the existing shared VPS.
 
 ## Architecture and operational contract
@@ -82,3 +82,19 @@ snapshot while the app is stopped. Never delete volumes or alter other project d
 - Owner browser can reach Studio; model configuration remains empty until user input.
 - Restart preserves settings and project state; no paid generation is triggered.
 - Local encrypted backup and restore test succeed; existing shared services remain healthy.
+
+## Long model requests and proposal status
+
+Studio now trusts the structured success of a completed `propose_action` card,
+rather than treating quoted words such as “failure” or “失败” as a tool error.
+Explicit tool errors remain errors. Regression coverage includes both empty and
+nonempty final assistant responses, and a genuinely failed proposal.
+
+The deployment allows at most ten minutes without a model stream event via
+`INKOS_LLM_STREAM_IDLE_TIMEOUT_MS=600000`. This bounds reasoning-heavy responses
+that may generate billable reasoning before emitting a visible event. A live
+Claude setup attempt was cancelled after the former three-minute idle deadline
+while OpenRouter reported reasoning tokens but no final response. This setting
+does not increase output-token limits or add retries. Cloudflare's separate
+HTTP request timeout still applies; a browser 524 alone does not establish that
+a persisted background writing task stopped. Check the task before retrying.

@@ -517,6 +517,13 @@ function resolveProjectTextArtifactFile(root: string, rawPath: string): { readon
 
 function isLikelyFailedToolResult(exec: CollectedToolExec): boolean {
   if (exec.status === "error") return true;
+  // Proposals quote user instructions, including prior failures and stop conditions.
+  // Their structured success must not be overridden by words inside that narrative.
+  if (
+    exec.tool === "propose_action"
+    && exec.status === "completed"
+    && (exec.details as { kind?: unknown } | undefined)?.kind === "proposed_action"
+  ) return false;
   const text = `${exec.error ?? ""}\n${exec.result ?? ""}`.toLowerCase();
   return /\bfailed\b|\berror\b|失败|异常|出错/.test(text);
 }

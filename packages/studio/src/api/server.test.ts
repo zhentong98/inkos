@@ -5919,6 +5919,50 @@ describe("createStudioServer daemon lifecycle", () => {
     expect(chatCompletionMock).not.toHaveBeenCalled();
   });
 
+  it.each([
+    { responseText: "", isError: false, expectedStatus: 200 },
+    { responseText: "请确认重试建书。", isError: false, expectedStatus: 200 },
+    { responseText: "", isError: true, expectedStatus: 502 },
+  ])("preserves proposal status when its narrative mentions previous failure ($isError, $responseText)", async ({ responseText, isError, expectedStatus }) => {
+    loadBookSessionMock.mockResolvedValue({
+      sessionId: "proposal-retry-session", bookId: null, sessionKind: "book-create",
+      title: null, messages: [], events: [], draftRounds: [], createdAt: 1, updatedAt: 1,
+    });
+    runAgentSessionMock.mockImplementationOnce(async (config: { onEvent?: (event: unknown) => void }) => {
+      config.onEvent?.({
+        type: "tool_execution_start", toolCallId: "proposal-retry", toolName: "propose_action",
+        args: { action: "create_book", instruction: "重试此前失败的建书任务。" },
+      });
+      config.onEvent?.({
+        type: "tool_execution_end", toolCallId: "proposal-retry", toolName: "propose_action", isError,
+        result: {
+          content: [{ type: "text", text: "此前失败；本次如有异常或 error 则停止，不重复提交。" }],
+          details: {
+            kind: "proposed_action", action: "create_book", targetSessionKind: "book-create",
+            sameSession: true, title: "最后一把钥匙", summary: "重试建书",
+            instruction: "重试此前失败的建书任务。",
+            actionPayload: { createBook: { title: "最后一把钥匙", genre: "mystery", language: "zh" } },
+          },
+        },
+      });
+      return { responseText, messages: [] };
+    });
+    const { createStudioServer } = await import("./server.js");
+    const app = createStudioServer(cloneProjectConfig() as never, root);
+    const response = await app.request("http://localhost/api/v1/agent", {
+      method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ instruction: "重试建书", sessionId: "proposal-retry-session", sessionKind: "book-create" }),
+    });
+    expect(response.status).toBe(expectedStatus);
+    const body = await response.json();
+    if (isError) expect(body.error).toBeDefined();
+    else {
+      expect(body.error).toBeUndefined();
+      expect(body.session.sessionId).toBe("proposal-retry-session");
+      if (!responseText) expect(body.details.toolExecutions[0]).toMatchObject({ tool: "propose_action", status: "completed" });
+    }
+  });
+
   it("accepts an empty final agent response after a successful play_step tool result", async () => {
     loadBookSessionMock.mockResolvedValue({
       sessionId: "agent-session-1",

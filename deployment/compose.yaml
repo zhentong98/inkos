@@ -2,6 +2,8 @@ name: inkos
 services:
   app:
     image: ${INKOS_IMAGE:?Set pinned INKOS_IMAGE}
+    environment:
+      INKOS_LLM_STREAM_IDLE_TIMEOUT_MS: "600000"
     restart: unless-stopped
     init: true
     read_only: true
