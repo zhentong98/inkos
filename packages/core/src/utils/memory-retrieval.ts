@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "./story-context.js";
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 import { readCurrentStateWithFallback } from "./outline-paths.js";
@@ -91,16 +92,17 @@ export interface VolumeSummarySelection {
 export async function retrieveMemorySelection(params: {
   readonly bookDir: string;
   readonly chapterNumber: number;
+  readonly baselineChapter?: number;
   readonly goal: string;
   readonly outlineNode?: string;
   readonly mustKeep?: ReadonlyArray<string>;
   readonly semanticSelector?: MemorySemanticSelector;
 }): Promise<MemorySelection> {
-  const storyDir = join(params.bookDir, "story");
+  const storyDir = await resolveStoryContextDir(params.bookDir, params.baselineChapter);
   const stateDir = join(storyDir, "state");
   const fallbackChapter = Math.max(0, params.chapterNumber - 1);
 
-  await bootstrapStructuredStateFromMarkdown({
+  if (params.baselineChapter === undefined) await bootstrapStructuredStateFromMarkdown({
     bookDir: params.bookDir,
     fallbackChapter,
   }).catch(() => undefined);
@@ -113,7 +115,7 @@ export async function retrieveMemorySelection(params: {
     structuredHooks,
     structuredSummaries,
   ] = await Promise.all([
-    readCurrentStateWithFallback(params.bookDir),
+    readCurrentStateWithFallback(params.bookDir, "", storyDir),
     readFile(join(storyDir, "pending_hooks.md"), "utf-8").catch(() => ""),
     readFile(join(storyDir, "volume_summaries.md"), "utf-8").catch(() => ""),
     readStructuredState(join(stateDir, "current_state.json"), CurrentStateStateSchema),
@@ -140,15 +142,15 @@ export async function retrieveMemorySelection(params: {
   const summaries = structuredSummaries?.rows ?? parseChapterSummariesMarkdown(
     await readFile(join(storyDir, "chapter_summaries.md"), "utf-8").catch(() => ""),
   );
-  const memoryDb = new MemoryDB(params.bookDir);
+  const memoryDb = params.baselineChapter === undefined ? new MemoryDB(params.bookDir) : undefined;
   try {
-    memoryDb.replaceSummaries(summaries);
-    memoryDb.replaceCurrentFacts(facts);
+    memoryDb?.replaceSummaries(summaries);
+    memoryDb?.replaceCurrentFacts(facts);
 
     // Markdown/structured hook state is authoritative. SQLite is a rebuildable
     // search projection and is never allowed to resurrect stale hook rows.
     const effectiveActiveHooks = activeHooks;
-    const dbPath = join(storyDir, "memory.db");
+    const dbPath = params.baselineChapter === undefined ? join(storyDir, "memory.db") : ":memory:";
     const searchIndex = new LocalSearchIndex(dbPath);
     try {
       searchIndex.replaceScope(
@@ -198,7 +200,7 @@ export async function retrieveMemorySelection(params: {
       searchIndex.close();
     }
   } finally {
-    memoryDb.close();
+    memoryDb?.close();
   }
 }
 

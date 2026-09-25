@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "./story-context.js";
 import { readFile, readdir } from "node:fs/promises";
 import { join } from "node:path";
 import type { StoredHook, StoredSummary } from "../state/memory-db.js";
@@ -14,6 +15,7 @@ import {
 
 export interface PlanningSeedMaterials {
   readonly storyDir: string;
+  readonly stateStoryDir: string;
   readonly authorIntent: string;
   readonly currentFocus: string;
   readonly storyBible: string;
@@ -85,14 +87,16 @@ async function readPreviousEndingExcerpt(
 export async function loadPlanningSeedMaterials(params: {
   readonly bookDir: string;
   readonly chapterNumber: number;
+  readonly baselineChapter?: number;
 }): Promise<PlanningSeedMaterials> {
   const storyDir = join(params.bookDir, "story");
+  const stateStoryDir = await resolveStoryContextDir(params.bookDir, params.baselineChapter);
   const sourcePaths = {
     authorIntent: join(storyDir, "author_intent.md"),
-    currentFocus: join(storyDir, "current_focus.md"),
-    chapterSummaries: join(storyDir, "chapter_summaries.md"),
+    currentFocus: join(stateStoryDir, "current_focus.md"),
+    chapterSummaries: join(stateStoryDir, "chapter_summaries.md"),
     bookRules: join(storyDir, "book_rules.md"),
-    currentState: join(storyDir, "current_state.md"),
+    currentState: join(stateStoryDir, "current_state.md"),
     brief: join(storyDir, "brief.md"),
   } as const;
 
@@ -119,7 +123,7 @@ export async function loadPlanningSeedMaterials(params: {
     readFileOrDefault(sourcePaths.bookRules),
     // Phase 5 consolidation: derive initial state from roles + pending_hooks
     // seed rows when current_state.md is still just the architect's placeholder.
-    readCurrentStateWithFallback(params.bookDir, placeholder),
+    readCurrentStateWithFallback(params.bookDir, placeholder, stateStoryDir),
     readPreviousEndingExcerpt(params.bookDir, params.chapterNumber),
     readBriefFile(sourcePaths.brief),
   ]);
@@ -130,6 +134,7 @@ export async function loadPlanningSeedMaterials(params: {
 
   return {
     storyDir,
+    stateStoryDir,
     authorIntent,
     currentFocus,
     storyBible,
@@ -147,6 +152,7 @@ export async function loadPlanningSeedMaterials(params: {
 export async function gatherPlanningMaterials(params: {
   readonly bookDir: string;
   readonly chapterNumber: number;
+  readonly baselineChapter?: number;
   readonly goal: string;
   readonly outlineNode?: string;
   readonly mustKeep?: ReadonlyArray<string>;
@@ -155,11 +161,13 @@ export async function gatherPlanningMaterials(params: {
   const seed = params.seed ?? await loadPlanningSeedMaterials({
     bookDir: params.bookDir,
     chapterNumber: params.chapterNumber,
+    baselineChapter: params.baselineChapter,
   });
 
   const memorySelection = await retrieveMemorySelection({
     bookDir: params.bookDir,
     chapterNumber: params.chapterNumber,
+    baselineChapter: params.baselineChapter,
     goal: params.goal,
     outlineNode: params.outlineNode,
     mustKeep: params.mustKeep,
@@ -172,13 +180,13 @@ export async function gatherPlanningMaterials(params: {
     memorySelection,
     plannerInputs: [
       join(seed.storyDir, "author_intent.md"),
-      join(seed.storyDir, "current_focus.md"),
+      join(seed.stateStoryDir, "current_focus.md"),
       join(seed.storyDir, "outline", "story_frame.md"),
       join(seed.storyDir, "outline", "volume_map.md"),
-      join(seed.storyDir, "chapter_summaries.md"),
+      join(seed.stateStoryDir, "chapter_summaries.md"),
       join(seed.storyDir, "book_rules.md"),
-      join(seed.storyDir, "current_state.md"),
-      join(seed.storyDir, "pending_hooks.md"),
+      join(seed.stateStoryDir, "current_state.md"),
+      join(seed.stateStoryDir, "pending_hooks.md"),
       ...(memorySelection.dbPath ? [memorySelection.dbPath] : []),
     ],
   };

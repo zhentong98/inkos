@@ -1,3 +1,4 @@
+import { readCharacterContext } from "../utils/outline-paths.js";
 import { readFile, writeFile, mkdir } from "node:fs/promises";
 import { join } from "node:path";
 import { BaseAgent } from "./base.js";
@@ -32,7 +33,6 @@ import {
   formatRecentSummaries,
   formatRecyclableHooks,
   readBookRules,
-  readCharacterMatrix,
   readEmotionalArcs,
   readSubplotBoard,
 } from "./planner-context.js";
@@ -43,6 +43,7 @@ export interface PlanChapterInput {
   readonly bookDir: string;
   readonly chapterNumber: number;
   readonly externalContext?: string;
+  readonly baselineChapter?: number;
 }
 
 export interface PlanChapterOutput {
@@ -82,6 +83,7 @@ export class PlannerAgent extends BaseAgent {
     const seedMaterials = await loadPlanningSeedMaterials({
       bookDir: input.bookDir,
       chapterNumber: input.chapterNumber,
+      baselineChapter: input.baselineChapter,
     });
     const outlineNode = this.findOutlineNode(seedMaterials.volumeOutline, input.chapterNumber);
     const goal = this.deriveGoal(
@@ -108,6 +110,7 @@ export class PlannerAgent extends BaseAgent {
       outlineNode,
       mustKeep,
       seed: seedMaterials,
+      baselineChapter: input.baselineChapter,
     });
     const memorySelection = materials.memorySelection;
     const activeHookCount = memorySelection.activeHooks.filter(
@@ -137,6 +140,7 @@ export class PlannerAgent extends BaseAgent {
     );
     const memo = await this.planChapterMemo({
       storyDir,
+      stateStoryDir: seedMaterials.stateStoryDir,
       bookDir: input.bookDir,
       chapterNumber: input.chapterNumber,
       isGoldenOpening,
@@ -186,6 +190,7 @@ export class PlannerAgent extends BaseAgent {
    */
   async planChapterMemo(input: {
     readonly storyDir: string;
+    readonly stateStoryDir?: string;
     readonly bookDir: string;
     readonly chapterNumber: number;
     readonly isGoldenOpening: boolean;
@@ -200,9 +205,9 @@ export class PlannerAgent extends BaseAgent {
     readonly lengthSpec: LengthSpec;
   }): Promise<ChapterMemo> {
     const [characterMatrix, subplotBoard, emotionalArcs, bookRulesRaw] = await Promise.all([
-      readCharacterMatrix(input.storyDir),
-      readSubplotBoard(input.storyDir),
-      readEmotionalArcs(input.storyDir),
+      readCharacterContext(input.bookDir, "", input.stateStoryDir ?? input.storyDir),
+      readSubplotBoard(input.stateStoryDir ?? input.storyDir),
+      readEmotionalArcs(input.stateStoryDir ?? input.storyDir),
       readBookRules(input.storyDir),
     ]);
 

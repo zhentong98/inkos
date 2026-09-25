@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "../utils/story-context.js";
 import { BaseAgent } from "./base.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
@@ -383,6 +384,7 @@ export class ContinuityAuditor extends BaseAgent {
     chapterNumber: number,
     genre?: string,
     options?: {
+      baselineChapter?: number;
       temperature?: number;
       chapterIntent?: string;
       chapterMemo?: ChapterMemo;
@@ -395,18 +397,19 @@ export class ContinuityAuditor extends BaseAgent {
       };
     },
   ): Promise<AuditResult> {
+    const stateStoryDir = await resolveStoryContextDir(bookDir, options?.baselineChapter);
     const [diskCurrentState, diskLedger, diskHooks, styleGuideRaw, subplotBoard, emotionalArcs, characterMatrix, chapterSummaries, parentCanon, fanficCanon, volumeOutline] =
       await Promise.all([
         // Phase 5 consolidation: derive initial state from roles + seed hooks
         // when current_state.md is still the architect seed placeholder.
-        readCurrentStateWithFallback(bookDir, "(文件不存在)"),
-        this.readFileSafe(join(bookDir, "story/particle_ledger.md")),
-        this.readFileSafe(join(bookDir, "story/pending_hooks.md")),
+        readCurrentStateWithFallback(bookDir, "(文件不存在)", stateStoryDir),
+        this.readFileSafe(join(stateStoryDir, "particle_ledger.md")),
+        this.readFileSafe(join(stateStoryDir, "pending_hooks.md")),
         this.readFileSafe(join(bookDir, "story/style_guide.md")),
-        this.readFileSafe(join(bookDir, "story/subplot_board.md")),
-        this.readFileSafe(join(bookDir, "story/emotional_arcs.md")),
-        readCharacterContext(bookDir, "(文件不存在)"),
-        this.readFileSafe(join(bookDir, "story/chapter_summaries.md")),
+        this.readFileSafe(join(stateStoryDir, "subplot_board.md")),
+        this.readFileSafe(join(stateStoryDir, "emotional_arcs.md")),
+        readCharacterContext(bookDir, "(文件不存在)", stateStoryDir),
+        this.readFileSafe(join(stateStoryDir, "chapter_summaries.md")),
         this.readFileSafe(join(bookDir, "story/parent_canon.md")),
         this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
         readVolumeMap(bookDir, "(文件不存在)"),

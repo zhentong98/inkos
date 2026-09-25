@@ -87,6 +87,13 @@ describe("outline-paths", () => {
     expect(context).toBe("legacy matrix table");
   });
 
+  it("does not fall forward to a live legacy matrix when the historical matrix is absent", async () => {
+    await writeFile(join(bookDir, "story", "character_matrix.md"), "FUTURE_CHARACTER_STATE");
+    const snapshot = join(bookDir, "story", "snapshots", "0");
+    await mkdir(snapshot, { recursive: true });
+    expect(await readCharacterContext(bookDir, "(missing)", snapshot)).toBe("(missing)");
+  });
+
   it("reads 节奏原则.md and falls back to rhythm_principles.md", async () => {
     await mkdir(join(bookDir, "story", "outline"), { recursive: true });
     await writeFile(join(bookDir, "story", "outline", "节奏原则.md"), "六条原则", "utf-8");

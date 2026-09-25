@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "../utils/story-context.js";
 import { BaseAgent } from "./base.js";
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
@@ -50,7 +51,7 @@ import {
   sanitizeNarrativeEvidenceBlock,
 } from "../utils/narrative-control.js";
 import { readFile, writeFile, mkdir, readdir } from "node:fs/promises";
-import { join } from "node:path";
+import { join, sep } from "node:path";
 import { commitAtomicFileSet, type AtomicFileWrite } from "../utils/atomic-file-set.js";
 
 import {
@@ -390,9 +391,7 @@ export class WriterAgent extends BaseAgent {
   }
 
   async settleChapterState(input: SettleChapterStateInput): Promise<WriteChapterOutput> {
-    const baselineStoryDir = input.baselineChapter === undefined
-      ? join(input.bookDir, "story")
-      : join(input.bookDir, "story", "snapshots", String(input.baselineChapter));
+    const baselineStoryDir = await resolveStoryContextDir(input.bookDir, input.baselineChapter);
     const [
       currentState,
       ledger,
@@ -403,17 +402,13 @@ export class WriterAgent extends BaseAgent {
       characterMatrix,
       volumeOutline,
     ] = await Promise.all([
-      input.baselineChapter === undefined
-        ? readCurrentStateWithFallback(input.bookDir, "(文件尚未创建)")
-        : this.readFileOrDefault(join(baselineStoryDir, "current_state.md")),
+      readCurrentStateWithFallback(input.bookDir, "(文件尚未创建)", baselineStoryDir),
       this.readFileOrDefault(join(baselineStoryDir, "particle_ledger.md")),
       this.readFileOrDefault(join(baselineStoryDir, "pending_hooks.md")),
       this.readFileOrDefault(join(baselineStoryDir, "chapter_summaries.md")),
       this.readFileOrDefault(join(baselineStoryDir, "subplot_board.md")),
       this.readFileOrDefault(join(baselineStoryDir, "emotional_arcs.md")),
-      input.baselineChapter === undefined
-        ? readCharacterContext(input.bookDir, "(文件尚未创建)")
-        : this.readSnapshotCharacterContext(input.bookDir, baselineStoryDir),
+      readCharacterContext(input.bookDir, "(文件尚未创建)", baselineStoryDir),
       readVolumeMap(input.bookDir, "(文件尚未创建)"),
     ]);
 
@@ -630,7 +625,10 @@ export class WriterAgent extends BaseAgent {
     output: WriteChapterOutput,
     numericalSystem: boolean = true,
     language: "zh" | "en" = "zh",
+    options?: { readonly historicalRevision?: boolean },
   ): Promise<void> {
+    const baselineChapter = options?.historicalRevision ? output.chapterNumber - 1 : undefined;
+    const baselineStoryDir = await resolveStoryContextDir(bookDir, baselineChapter);
     const chaptersDir = join(bookDir, "chapters");
     await mkdir(chaptersDir, { recursive: true });
 
@@ -652,7 +650,11 @@ export class WriterAgent extends BaseAgent {
       bookDir,
       output,
       language,
+      baselineChapter,
     );
+    if (options?.historicalRevision && !runtimeStateArtifacts) {
+      throw new Error("Cannot persist historical revision without a complete settled runtime state");
+    }
     const chapterSummariesMarkdown = runtimeStateArtifacts?.chapterSummariesMarkdown
       ?? (!output.runtimeStateDelta && output.updatedChapterSummaries
         ? output.updatedChapterSummaries
@@ -715,10 +717,31 @@ export class WriterAgent extends BaseAgent {
       writes.push({ relativePath: join("story", "particle_ledger.md"), content: output.updatedLedger });
     }
 
+    let persistedWrites = writes;
+    const snapshotDeletes: string[] = [];
+    if (options?.historicalRevision) {
+      // Keep current truth at the latest chapter. Atomically pair this revised
+      // body with its own settled boundary, which the next revision will read.
+      const snapshotPath = join("story", "snapshots", String(output.chapterNumber));
+      persistedWrites = writes.map((write) => write.relativePath.startsWith(`story${sep}`)
+        ? { ...write, relativePath: join(snapshotPath, write.relativePath.slice(`story${sep}`.length)) }
+        : write);
+      for (const name of ["particle_ledger.md", "subplot_board.md", "emotional_arcs.md", "character_matrix.md"]) {
+        const relativePath = join(snapshotPath, name);
+        if (persistedWrites.some((write) => write.relativePath === relativePath)) continue;
+        try {
+          persistedWrites.push({ relativePath, content: await readFile(join(baselineStoryDir, name), "utf-8") });
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
+          // Never retain an obsolete optional file from the replaced snapshot.
+          snapshotDeletes.push(relativePath);
+        }
+      }
+    }
     await commitAtomicFileSet({
       rootDir: bookDir,
-      writes,
-      deletes: supersededChapterFiles.map((file) => join("chapters", file)),
+      writes: persistedWrites,
+      deletes: [...supersededChapterFiles.map((file) => join("chapters", file)), ...snapshotDeletes],
     });
   }
 
@@ -982,14 +1005,6 @@ ${overrides}\n`;
     }
   }
 
-  private async readSnapshotCharacterContext(
-    bookDir: string,
-    snapshotStoryDir: string,
-  ): Promise<string> {
-    const snapshotMatrix = await this.readFileOrDefault(join(snapshotStoryDir, "character_matrix.md"));
-    if (snapshotMatrix !== "(文件尚未创建)") return snapshotMatrix;
-    return readCharacterContext(bookDir, "(文件尚未创建)");
-  }
 
   private renderDeltaSummaryRow(delta: RuntimeStateDelta): string {
     if (!delta.chapterSummary) return "";
@@ -1098,6 +1113,7 @@ ${overrides}\n`;
     bookDir: string,
     output: WriteChapterOutput,
     language: "zh" | "en",
+    baselineChapter?: number,
   ): Promise<RuntimeStateArtifacts | null> {
     if (!output.runtimeStateDelta) return null;
     const safeDelta = this.normalizeRuntimeStateDeltaChapter(
@@ -1120,11 +1136,7 @@ ${overrides}\n`;
       };
     }
 
-    return buildRuntimeStateArtifacts({
-      bookDir,
-      delta: safeDelta,
-      language,
-    });
+    return this.buildRuntimeStateArtifactsIfPresent(bookDir, safeDelta, language, output.chapterNumber, undefined, baselineChapter);
   }
 
   private async renderAppendedChapterSummary(

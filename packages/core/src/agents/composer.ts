@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "../utils/story-context.js";
 import { readFile, readdir, mkdir } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { BaseAgent } from "./base.js";
@@ -34,6 +35,7 @@ export interface ComposeChapterInput {
   readonly book: BookConfig;
   readonly bookDir: string;
   readonly chapterNumber: number;
+  readonly baselineChapter?: number;
   readonly plan: PlanChapterOutput;
   readonly contextBudget?: ContextBudget;
   readonly compressibleContextCompiler?: CompressibleContextCompiler;
@@ -99,6 +101,7 @@ export async function composeGovernedChapter(input: ComposeChapterInput): Promis
     input.book.language ?? "zh",
     input.outlineSectionSelector,
     input.memorySemanticSelector,
+    input.baselineChapter,
   );
   const referenceContext = await loadReferenceContext(input);
   const selectedContext = [...baseContext.entries, ...referenceContext.entries];
@@ -575,10 +578,12 @@ async function collectSelectedContext(
   language: "zh" | "en",
   outlineSectionSelector?: OutlineSectionSelector,
   memorySemanticSelector?: MemorySemanticSelector,
+  baselineChapter?: number,
 ): Promise<{
   readonly entries: ContextPackage["selectedContext"];
   readonly retrievalTrace: MemoryRetrievalTrace;
 }> {
+    const stateStoryDir = await resolveStoryContextDir(dirname(storyDir), baselineChapter);
     const retrievalHints = deriveRetrievalHints(plan);
     const memoBodyExcerpt = plan.memo.body.trim();
     const chapterMemoEntry = memoBodyExcerpt.length > 0
@@ -599,7 +604,7 @@ async function collectSelectedContext(
 
     const entries = await Promise.all([
       maybeContextSource(
-        storyDir,
+        stateStoryDir,
         "current_focus.md",
         "Current task focus for this chapter.",
       ),
@@ -609,12 +614,12 @@ async function collectSelectedContext(
         "User's long-term authorial intent and direction — binding, overrides model defaults.",
       ),
       maybeContextSource(
-        storyDir,
+        stateStoryDir,
         "audit_drift.md",
         "Carry forward audit drift guidance from the previous chapter without polluting hard state facts.",
       ),
       maybeContextSource(
-        storyDir,
+        stateStoryDir,
         "current_state.md",
         "Preserve hard state facts referenced by the active chapter brief or hard constraints.",
       ),
@@ -651,7 +656,7 @@ async function collectSelectedContext(
         "Preserve extracted fanfic canon constraints for governed writing.",
       ),
     ]);
-    const trailEntries = await buildRecentChapterTrailEntries(storyDir, plan.intent.chapter);
+    const trailEntries = await buildRecentChapterTrailEntries(storyDir, plan.intent.chapter, stateStoryDir);
 
     const memorySelection = await retrieveMemorySelection({
       bookDir: dirname(storyDir),
@@ -660,9 +665,10 @@ async function collectSelectedContext(
       outlineNode: plan.intent.outlineNode,
       mustKeep: retrievalHints,
       semanticSelector: memorySemanticSelector,
+      baselineChapter,
     });
     const hookDebtEntries = await buildHookDebtEntries(
-      storyDir,
+      stateStoryDir,
       plan,
       memorySelection.activeHooks,
       language,
@@ -721,8 +727,9 @@ function deriveRetrievalHints(plan: PlanChapterOutput): string[] {
 async function buildRecentChapterTrailEntries(
   storyDir: string,
   chapterNumber: number,
+  stateStoryDir = storyDir,
 ): Promise<ContextPackage["selectedContext"]> {
-    const content = await readFileOrDefault(join(storyDir, "chapter_summaries.md"));
+    const content = await readFileOrDefault(join(stateStoryDir, "chapter_summaries.md"));
     if (!content || content === "(文件尚未创建)") {
       return [];
     }

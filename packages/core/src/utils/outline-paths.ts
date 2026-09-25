@@ -201,7 +201,11 @@ async function collectRoleDir(
 export async function readCharacterContext(
   bookDir: string,
   fallbackPlaceholder: string = "",
+  dynamicStoryDir: string = join(bookDir, "story"),
 ): Promise<string> {
+  // Role cards are author-controlled foundation canon (like story_frame);
+  // chapter progress is stored in the matrix. Never fall through to live
+  // dynamic state when reading a historical revision baseline.
   const cards = await readRoleCards(bookDir);
   if (cards.length > 0) {
     const groups: Record<"major" | "minor", RoleCard[]> = { major: [], minor: [] };
@@ -222,7 +226,7 @@ export async function readCharacterContext(
   }
 
   // Fallback: legacy character_matrix.md (may itself be a shim pointer).
-  const legacyPath = join(bookDir, "story", "character_matrix.md");
+  const legacyPath = join(dynamicStoryDir, "character_matrix.md");
   return readOr(legacyPath, fallbackPlaceholder);
 }
 
@@ -298,8 +302,8 @@ function extractSeedHooksFromPendingHooks(raw: string): string[] {
 export async function readCurrentStateWithFallback(
   bookDir: string,
   fallbackPlaceholder: string = "",
+  storyDir: string = join(bookDir, "story"),
 ): Promise<string> {
-  const storyDir = join(bookDir, "story");
   const currentStatePath = join(storyDir, "current_state.md");
   const raw = await readOr(currentStatePath, "");
 

@@ -1,3 +1,4 @@
+import { resolveStoryContextDir } from "../utils/story-context.js";
 import { BaseAgent } from "./base.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
@@ -126,21 +127,15 @@ export class ReviserAgent extends BaseAgent {
       baselineChapter?: number;
     },
   ): Promise<ReviseOutput> {
-    const baselineStoryDir = options?.baselineChapter === undefined
-      ? join(bookDir, "story")
-      : join(bookDir, "story", "snapshots", String(options.baselineChapter));
+    const baselineStoryDir = await resolveStoryContextDir(bookDir, options?.baselineChapter);
     const [currentState, ledger, hooks, styleGuideRaw, volumeOutline, storyBible, characterMatrix, chapterSummaries, parentCanon, fanficCanon] = await Promise.all([
-      options?.baselineChapter === undefined
-        ? readCurrentStateWithFallback(bookDir, "(文件不存在)")
-        : this.readFileSafe(join(baselineStoryDir, "current_state.md")),
+      readCurrentStateWithFallback(bookDir, "(文件不存在)", baselineStoryDir),
       this.readFileSafe(join(baselineStoryDir, "particle_ledger.md")),
       this.readFileSafe(join(baselineStoryDir, "pending_hooks.md")),
       this.readFileSafe(join(bookDir, "story/style_guide.md")),
       readVolumeMap(bookDir, "(文件不存在)"),
       readStoryFrame(bookDir, "(文件不存在)"),
-      options?.baselineChapter === undefined
-        ? readCharacterContext(bookDir, "(文件不存在)")
-        : this.readSnapshotCharacterContext(bookDir, baselineStoryDir),
+      readCharacterContext(bookDir, "(文件不存在)", baselineStoryDir),
       this.readFileSafe(join(baselineStoryDir, "chapter_summaries.md")),
       this.readFileSafe(join(bookDir, "story/parent_canon.md")),
       this.readFileSafe(join(bookDir, "story/fanfic_canon.md")),
@@ -553,14 +548,6 @@ ${outputFormat}`;
     }
   }
 
-  private async readSnapshotCharacterContext(
-    bookDir: string,
-    snapshotStoryDir: string,
-  ): Promise<string> {
-    const snapshotMatrix = await this.readFileSafe(join(snapshotStoryDir, "character_matrix.md"));
-    if (snapshotMatrix !== "(文件不存在)") return snapshotMatrix;
-    return readCharacterContext(bookDir, "(文件不存在)");
-  }
 
   private buildReducedControlBlock(
     memo: ChapterMemo | undefined,

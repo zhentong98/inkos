@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, mkdir, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { gatherPlanningMaterials } from "../utils/planning-materials.js";
@@ -87,4 +87,43 @@ describe("gatherPlanningMaterials", () => {
       join(storyDir, "pending_hooks.md"),
     ]));
   });
+  it("isolates revision materials and retrieval from later chapter state without rewriting live memory", async () => {
+    await gatherPlanningMaterials({ bookDir, chapterNumber: 4, goal: "harbor" });
+    const liveDbBefore = await readFile(join(storyDir, "memory.db"));
+    const snapshot = join(storyDir, "snapshots", "0");
+    await mkdir(snapshot, { recursive: true });
+    await writeFile(join(snapshot, "current_state.md"), "# Current State\n\n- The opening door is sealed.\n");
+    await writeFile(join(snapshot, "pending_hooks.md"), "# Pending Hooks\n");
+    const result = await gatherPlanningMaterials({
+      bookDir, chapterNumber: 1, goal: "opening", baselineChapter: 0,
+    });
+    expect(result.currentState).toContain("opening door is sealed");
+    expect(result.currentState).not.toContain("injured");
+    expect(result.currentFocus).not.toContain("harbor ledger");
+    expect(result.authorIntent).toContain("mentor-debt");
+    expect(result.activeHooks).toEqual([]);
+    expect(result.recentSummaries).toEqual([]);
+    expect(JSON.stringify(result.memorySelection)).not.toMatch(/H019|Harbor pressure|still injured/);
+    expect(await readFile(join(storyDir, "memory.db"))).toEqual(liveDbBefore);
+  });
+
+  it("fails closed when a requested revision snapshot is unavailable", async () => {
+    await expect(gatherPlanningMaterials({
+      bookDir, chapterNumber: 1, goal: "opening", baselineChapter: 0,
+    })).rejects.toThrow(/snapshot 0/);
+  });
+
+  it("preserves canonical Phase 5 roles but derives opening state only from baseline hooks", async () => {
+    const snapshot = join(storyDir, "snapshots", "0");
+    await mkdir(snapshot, { recursive: true });
+    await mkdir(join(storyDir, "roles", "主要角色"), { recursive: true });
+    await writeFile(join(storyDir, "roles", "主要角色", "Lin.md"), "## 当前现状\n守在开场的港口。\n");
+    await writeFile(join(snapshot, "current_state.md"), "# State\nSeeded at book creation");
+    await writeFile(join(snapshot, "pending_hooks.md"), "| hook_id | start_chapter | type | status | last_advanced_chapter | expected_payoff | notes |\n|---|---|---|---|---|---|---|\n| H0 | 0 | mystery | deferred | 0 | opening | ORIGINAL_SEED |\n");
+    const result = await gatherPlanningMaterials({ bookDir, chapterNumber: 1, goal: "opening", baselineChapter: 0 });
+    expect(result.currentState).toContain("守在开场的港口");
+    expect(result.currentState).toContain("ORIGINAL_SEED");
+    expect(result.currentState).not.toContain("Ledger pressure");
+  });
+
 });

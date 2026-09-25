@@ -5069,6 +5069,41 @@ describe("PipelineRunner", () => {
     }
   }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
 
+  it("does not clear downstream state invalidation by merely auditing the prose", async () => {
+    const { root, runner, state, bookId, chaptersDir } = await createRevisionGateFixture("always");
+    const [first] = await state.loadChapterIndex(bookId);
+    await snapshotRevisionBaseline(state, bookId, 1);
+    await writeFile(join(chaptersDir, "0002_Later.md"), "# Chapter 2\n\nThe new chapter waits.");
+    await state.saveChapterIndex(bookId, [
+      { ...first!, status: "ready-for-review" },
+      { ...first!, number: 2, status: "needs-revision" as NonNullable<typeof first>["status"], auditIssues: ["[warning] Chapter 1 changed; re-review this downstream chapter for continuity."] },
+      { ...first!, number: 3, status: "needs-revision" as NonNullable<typeof first>["status"] },
+    ]);
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({ passed: true, issues: [], summary: "clean prose" }));
+    try {
+      await runner.auditDraft(bookId, 2);
+      const index = await state.loadChapterIndex(bookId);
+      expect(index[1]?.status).toBe("needs-revision");
+      expect(index[1]?.auditIssues).toContain("[warning] Chapter 1 changed; re-review this downstream chapter for continuity.");
+      await expect(runner.reviseDraft(bookId, 3)).rejects.toThrow(/chapter 2.*needs-revision/);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
+  it("rejects a revision that skips an invalidated predecessor before any model call", async () => {
+    const { root, runner, state, bookId } = await createRevisionGateFixture("always");
+    const [first] = await state.loadChapterIndex(bookId);
+    await state.saveChapterIndex(bookId, [
+      { ...first!, status: "ready-for-review" },
+      { ...first!, number: 2, status: "needs-revision" as NonNullable<typeof first>["status"] },
+      { ...first!, number: 3, status: "needs-revision" as NonNullable<typeof first>["status"] },
+    ]);
+    const planner = vi.spyOn(PlannerAgent.prototype, "planChapter");
+    try {
+      await expect(runner.reviseDraft(bookId, 3)).rejects.toThrow(/chapter 2.*needs-revision/);
+      expect(planner).not.toHaveBeenCalled();
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("keeps current truth intact and marks downstream chapters when reworking an older chapter", async () => {
     const { root, runner, state, bookId, chaptersDir, revisedBody } = await createRevisionGateFixture("always");
     const storyDir = join(state.bookDir(bookId), "story");
@@ -5099,7 +5134,7 @@ describe("PipelineRunner", () => {
     ]);
     const snapshotState = vi.spyOn(state, "snapshotState");
 
-    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+    const auditSpy = vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
       .mockResolvedValueOnce(createAuditResult({ passed: true, issues: [], summary: "clean" }))
       .mockResolvedValueOnce(createAuditResult({ passed: true, issues: [], summary: "clean alternative" }));
 
@@ -5113,6 +5148,9 @@ describe("PipelineRunner", () => {
       const savedChapter = await readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8");
       const savedIndex = await state.loadChapterIndex(bookId);
 
+      expect(auditSpy.mock.calls[0]?.[4]?.baselineChapter).toBe(0);
+      expect(auditSpy.mock.calls[1]?.[4]?.baselineChapter).toBe(0);
+      expect(JSON.stringify(auditSpy.mock.calls[0]?.[4]?.contextPackage)).not.toContain("second chapter is already complete");
       expect(result.applied).toBe(true);
       expect(savedChapter).toContain(revisedBody);
       await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(latestState);
@@ -5120,6 +5158,11 @@ describe("PipelineRunner", () => {
       expect(savedIndex[0]?.status).toBe("ready-for-review");
       expect(savedIndex[1]?.status).toBe("needs-revision");
       expect(snapshotState).not.toHaveBeenCalled();
+      const revisedSnapshot = await readFile(join(storyDir, "snapshots", "1", "current_state.md"), "utf-8");
+      expect(revisedSnapshot).toContain("Revision state settled from the new body");
+      expect(revisedSnapshot).not.toContain("second chapter is already complete");
+      const manifest = JSON.parse(await readFile(join(storyDir, "snapshots", "1", "state", "manifest.json"), "utf-8"));
+      expect(manifest.lastAppliedChapter).toBe(1);
     } finally {
       await rm(root, { recursive: true, force: true });
     }

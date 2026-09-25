@@ -90,6 +90,22 @@ describe("ComposerAgent", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it("composes a revision from its baseline without future facts, hooks or drift", async () => {
+    const snapshot = join(storyDir, "snapshots", "0");
+    await mkdir(snapshot, { recursive: true });
+    await writeFile(join(snapshot, "current_state.md"), "# State\n\n- Opening baseline fact.\n");
+    await writeFile(join(snapshot, "pending_hooks.md"), "# Hooks\n");
+    await writeFile(join(storyDir, "audit_drift.md"), "FUTURE_DRIFT_MARKER");
+    const result = await composeGovernedChapter({
+      book, bookDir, chapterNumber: 1, baselineChapter: 0,
+      plan: { ...plan, intent: { ...plan.intent, chapter: 1 }, memo: { ...plan.memo, chapter: 1 } },
+    });
+    const context = JSON.stringify(result.contextPackage);
+    expect(context).toContain("Opening baseline fact");
+    expect(context).not.toMatch(/FUTURE_DRIFT_MARKER|still hides|mentor vanished/);
+    expect(context).toContain("User's long-term authorial intent");
+  });
+
   it("selects only the relevant context and writes a context package", async () => {
     const composer = new ComposerAgent({
       client: {} as ConstructorParameters<typeof ComposerAgent>[0]["client"],

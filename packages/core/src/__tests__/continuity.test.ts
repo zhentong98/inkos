@@ -15,6 +15,38 @@ describe("ContinuityAuditor", () => {
     vi.restoreAllMocks();
   });
 
+  it("audits a historical chapter without later truth and preserves candidate overrides", async () => {
+    const root = await mkdtemp(join(tmpdir(), "inkos-audit-baseline-"));
+    const bookDir = join(root, "book");
+    const storyDir = join(bookDir, "story");
+    const snapshot = join(storyDir, "snapshots", "0");
+    await mkdir(snapshot, { recursive: true });
+    for (const name of ["current_state", "pending_hooks", "particle_ledger", "character_matrix", "subplot_board", "emotional_arcs", "chapter_summaries"]) {
+      await writeFile(join(storyDir, `${name}.md`), `FUTURE_${name}`);
+      await writeFile(join(snapshot, `${name}.md`), `BASELINE_${name}`);
+    }
+    await mkdir(join(storyDir, "roles", "主要角色"), { recursive: true });
+    await writeFile(join(storyDir, "roles", "主要角色", "Lin.md"), "CANONICAL_ROLE_CONSTRAINT");
+    const auditor = new ContinuityAuditor({
+      client: { provider: "openai", apiFormat: "chat", stream: false,
+        defaults: { temperature: 0.7, maxTokens: 4096, thinkingBudget: 0, extra: {} } },
+      model: "test-model", projectRoot: root,
+    });
+    const chat = vi.spyOn(ContinuityAuditor.prototype as never, "chat" as never).mockResolvedValue({
+      content: JSON.stringify({ passed: true, issues: [], summary: "ok" }), usage: ZERO_USAGE,
+    });
+    try {
+      await auditor.auditChapter(bookDir, "Opening content.", 1, "other", {
+        baselineChapter: 0, truthFileOverrides: { currentState: "CANDIDATE_STATE" },
+      });
+      const messages = JSON.stringify(chat.mock.calls[0]?.[0]);
+      expect(messages).toContain("CANDIDATE_STATE");
+      expect(messages).toContain("BASELINE_pending_hooks");
+      expect(messages).toContain("CANONICAL_ROLE_CONSTRAINT");
+      expect(messages).not.toContain("FUTURE_");
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("returns a critical audit issue instead of throwing when audit output is not JSON", () => {
     const auditor = new ContinuityAuditor({
       client: {

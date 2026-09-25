@@ -1,3 +1,5 @@
+import { readCurrentStateWithFallback } from "../utils/outline-paths.js";
+import { resolveStoryContextDir } from "../utils/story-context.js";
 import { AsyncLocalStorage } from "node:async_hooks";
 import type { LLMClient, OnStreamProgress } from "../llm/provider.js";
 import { createLLMClient } from "../llm/provider.js";
@@ -1295,6 +1297,10 @@ export class PipelineRunner {
       throw new Error(`No chapters to audit for "${bookId}"`);
     }
 
+    const index = await this.state.loadChapterIndex(bookId);
+    const latestChapter = index.length > 0 ? Math.max(...index.map((chapter) => chapter.number)) : targetChapter;
+    const baselineChapter = targetChapter < latestChapter ? targetChapter - 1 : undefined;
+    await resolveStoryContextDir(bookDir, baselineChapter);
     const content = await this.readChapterContent(bookDir, targetChapter);
     const auditor = new ContinuityAuditor(this.agentCtxFor("auditor", bookId));
     const { profile: gp } = await this.loadGenreProfile(book.genre);
@@ -1310,23 +1316,26 @@ export class PipelineRunner {
       chapterContent: content,
       chapterNumber: targetChapter,
       language,
+      auditOptions: baselineChapter === undefined ? undefined : { baselineChapter },
     });
     const result = evaluation.auditResult;
 
     // Update index with audit result
-    const index = await this.state.loadChapterIndex(bookId);
     const updated = index.map((ch) => {
       if (ch.number !== targetChapter) return ch;
       const repair = parseStateDegradedReviewNote(ch.reviewNote);
       const pendingStateRepair = ch.status === "state-degraded" || repair !== null;
+      const pendingRevision = String(ch.status) === "needs-revision";
+      const downstreamIssues = pendingRevision ? (ch.auditIssues ?? []).filter((issue) =>
+        issue.includes("re-review this downstream chapter") || issue.includes("请重新检查本章与前文")) : [];
       const baseStatus = result.passed ? "ready-for-review" : "audit-failed";
       const auditIssues = result.issues.map((i) => `[${i.severity}] ${i.description}`);
       // A prose audit cannot certify or repair the derived story state.
       return {
         ...ch,
-        status: (pendingStateRepair ? "state-degraded" : baseStatus) as ChapterMeta["status"],
+        status: (pendingStateRepair ? "state-degraded" : pendingRevision ? "needs-revision" : baseStatus) as ChapterMeta["status"],
         updatedAt: new Date().toISOString(),
-        auditIssues: [...new Set([...auditIssues, ...(repair?.injectedIssues ?? [])])],
+        auditIssues: [...new Set([...auditIssues, ...(repair?.injectedIssues ?? []), ...downstreamIssues])],
         ...(pendingStateRepair ? {
           reviewNote: JSON.stringify({
             kind: "state-degraded",
@@ -1337,7 +1346,6 @@ export class PipelineRunner {
       };
     });
     await this.state.saveChapterIndex(bookId, updated);
-    const latestChapter = index.length > 0 ? Math.max(...index.map((chapter) => chapter.number)) : targetChapter;
     if (targetChapter === latestChapter) {
       await this.persistAuditDriftGuidance({
         bookDir,
@@ -1379,10 +1387,20 @@ export class PipelineRunner {
       if (!chapterMeta) {
         throw new Error(`Chapter ${targetChapter} not found in index`);
       }
+      const invalidPredecessor = index.find((chapter) => chapter.number < targetChapter
+        && (String(chapter.status) === "needs-revision" || chapter.status === "state-degraded"
+          || parseStateDegradedReviewNote(chapter.reviewNote) !== null));
+      if (invalidPredecessor) {
+        throw new Error(`Cannot revise chapter ${targetChapter}: chapter ${invalidPredecessor.number} is ${invalidPredecessor.status}; repair earlier chapters first.`);
+      }
       const latestChapter = index.length > 0
         ? Math.max(...index.map((chapter) => chapter.number))
         : targetChapter;
       const isLatestChapter = targetChapter === latestChapter;
+
+      const baselineChapter = targetChapter - 1;
+      // Resolve before any planner/model call; never fall forward to later truth.
+      const baselineStoryDir = await resolveStoryContextDir(bookDir, baselineChapter);
 
       // Re-audit to get structured issues (index only stores strings)
       const content = await this.readChapterContent(bookDir, targetChapter);
@@ -1400,7 +1418,7 @@ export class PipelineRunner {
         bookDir,
         targetChapter,
         effectiveExternalContext,
-        { reuseExistingIntentWhenContextMissing: true },
+        { reuseExistingIntentWhenContextMissing: true, baselineChapter },
       );
       const preRevision = await this.evaluateMergedAudit({
         auditor,
@@ -1411,12 +1429,13 @@ export class PipelineRunner {
         language,
         auditOptions: reviseControlInput
           ? {
+              baselineChapter,
               chapterIntent: reviseControlInput.plan.intentMarkdown,
               chapterMemo: reviseControlInput.plan.memo,
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
             }
-          : undefined,
+          : { baselineChapter },
       });
 
       const explicitRevisionRequested = Boolean(effectiveExternalContext?.trim())
@@ -1445,10 +1464,8 @@ export class PipelineRunner {
         chapterLengthTarget,
         lengthLanguage,
       );
-      const baselineChapter = targetChapter - 1;
-      const baselineStoryDir = join(bookDir, "story", "snapshots", String(baselineChapter));
       const [baselineState, baselineHooks] = await Promise.all([
-        readFile(join(baselineStoryDir, "current_state.md"), "utf-8"),
+        readCurrentStateWithFallback(bookDir, "", baselineStoryDir),
         readFile(join(baselineStoryDir, "pending_hooks.md"), "utf-8"),
       ]).catch((error) => {
         throw new Error(
@@ -1470,13 +1487,13 @@ export class PipelineRunner {
         book.genre,
         reviseControlInput
           ? {
+              baselineChapter,
               chapterIntent: reviseControlInput.plan.intentMarkdown,
               chapterMemo: reviseControlInput.plan.memo,
               chapterIntentData: reviseControlInput.plan.intent,
               contextPackage: reviseControlInput.composed.contextPackage,
               ruleStack: reviseControlInput.composed.ruleStack,
               lengthSpec,
-              baselineChapter,
             }
           : { lengthSpec, baselineChapter },
       );
@@ -1570,6 +1587,7 @@ export class PipelineRunner {
         auditOptions: reviseControlInput
           ? {
               temperature: 0,
+              baselineChapter,
               chapterIntent: reviseControlInput.plan.intentMarkdown,
               chapterMemo: reviseControlInput.plan.memo,
               contextPackage: reviseControlInput.composed.contextPackage,
@@ -1581,6 +1599,7 @@ export class PipelineRunner {
               },
             }
           : {
+              baselineChapter,
               temperature: 0,
               truthFileOverrides: {
                 currentState: settledRevision.updatedState,
@@ -1673,23 +1692,12 @@ export class PipelineRunner {
       }
       await archiveChapterVersion(bookDir, targetChapter, content, "revision");
       const reviseLang = book.language ?? gp.language;
-      const reviseHeading = reviseLang === "en"
-        ? `# Chapter ${targetChapter}: ${chapterMeta.title}`
-        : `# 第${targetChapter}章 ${chapterMeta.title}`;
 
-      // Only the latest chapter owns current truth. Reworking an older chapter
-      // invalidates its descendants, but must not rewind the live story state.
-      if (isLatestChapter) {
-        await writer.saveChapter(bookDir, settledRevision, gp.numericalSystem, reviseLang);
-      } else {
-        await commitAtomicFileSet({
-          rootDir: bookDir,
-          writes: [{
-            relativePath: join("chapters", existingFile),
-            content: `${reviseHeading}\n\n${revisedContent}`,
-          }],
-        });
-      }
+      // Persist a historical revision's settled boundary beside the new body,
+      // while only the latest chapter is allowed to update live truth.
+      await writer.saveChapter(bookDir, settledRevision, gp.numericalSystem, reviseLang, {
+        historicalRevision: !isLatestChapter,
+      });
 
       // Update index
       const downstreamRevisionNotice = language === "en"
@@ -3729,6 +3737,7 @@ ${matrix}`,
     chapterNumber: number;
     language: LengthLanguage;
     auditOptions?: {
+      baselineChapter?: number;
       temperature?: number;
       chapterIntent?: string;
       chapterMemo?: ChapterMemo;
@@ -3804,6 +3813,7 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly baselineChapter?: number;
     },
   ): Promise<{
     plan: PlanChapterOutput;
@@ -3817,6 +3827,7 @@ ${matrix}`,
       bookDir,
       chapterNumber,
       plan,
+      baselineChapter: options?.baselineChapter,
       contextBudget: contextBudgetFromClient(composerCtx.client),
       compressibleContextCompiler: (request) => composer.compileCompressibleContext(request),
       outlineSectionSelector: (request) => composer.selectOutlineSections(request),
@@ -3840,9 +3851,11 @@ ${matrix}`,
     externalContext?: string,
     options?: {
       readonly reuseExistingIntentWhenContextMissing?: boolean;
+      readonly baselineChapter?: number;
     },
   ): Promise<PlanChapterOutput> {
     if (
+      options?.baselineChapter === undefined &&
       options?.reuseExistingIntentWhenContextMissing &&
       (!externalContext || externalContext.trim().length === 0)
     ) {
@@ -3856,6 +3869,7 @@ ${matrix}`,
       bookDir,
       chapterNumber,
       externalContext,
+      baselineChapter: options?.baselineChapter,
     });
     // Persist in the new memo format so subsequent compose/write phases can
     // skip the planner LLM call when no new context is supplied.
