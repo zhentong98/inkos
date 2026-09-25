@@ -63,6 +63,11 @@ Given the chapter text and the CHANGES made to truth files (state card + hooks p
 5. Retroactive edit — truth file change implies something happened in a PREVIOUS chapter, not the current one
 6. Cross-truth key-setting conflict — numbered rules, named laws, ranks, identities, locations, or relationship labels in the new truth files contradict the chapter text or the authority context
 
+Hook identity contract:
+- Hook IDs are opaque, stable identifiers assigned by the host. Both numbered IDs (H003) and descriptive IDs (including non-Latin text) are supported and may coexist.
+- Do not require a numbering sequence or renaming to H0xx. An ID's spelling or format alone is not a continuity error.
+- Still check narrative support, references, accidental loss of existing hooks, and substantive duplicate promises. Existing IDs must remain stable.
+
 Output format (simple, NOT JSON):
 - First line: exactly PASS, REPAIR, or FAIL (nothing else on this line)
 - Following lines: one warning per line, optionally prefixed with [category]

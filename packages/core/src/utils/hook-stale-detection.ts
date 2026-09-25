@@ -93,13 +93,14 @@ export function computeHookDiagnostics(params: {
         upstreamReferenceChapters.push(plantedChapter);
         continue;
       }
-      // Upstream is "planted but not delivered" if startChapter is non-zero
-      // AND it's not resolved. An upstream that is still a seed (startChapter
-      // 0) counts as unplanted.
-      const upstreamResolved = isResolved(upstream);
+      // Legacy settlements may resolve a seed without updating startChapter.
+      // Resolution clears the gate, but never borrow a future chapter's state.
+      const upstreamResolved = isResolved(upstream)
+        && upstream.startChapter <= currentChapter
+        && upstream.lastAdvancedChapter <= currentChapter;
       const upstreamPlanted = upstream.startChapter > 0
         && upstream.startChapter <= currentChapter;
-      if (!upstreamPlanted || !upstreamResolved) {
+      if (!upstreamResolved) {
         // We only block when the upstream genuinely has not cleared its gate.
         // For a pure "must be planted first" relationship, "planted but not
         // resolved" still counts as blocking the downstream from firing.

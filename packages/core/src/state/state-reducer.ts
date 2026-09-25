@@ -138,15 +138,21 @@ function applyHookOps(hooksState: HooksState, delta: RuntimeStateDelta): HooksSt
 }
 
 function mergeHookRecord(existing: HookRecord, incoming: HookRecord): HookRecord {
-  const expectedPayoff = preferRicherText(existing.expectedPayoff, incoming.expectedPayoff);
-  const notes = preferRicherText(existing.notes, incoming.notes);
+  // An older advancement must not replace facts from a newer settlement.
+  // Equal chapters are allowed for repair/reapply of the current chapter.
+  if (incoming.lastAdvancedChapter < existing.lastAdvancedChapter) return { ...existing };
+  const expectedPayoff = incoming.expectedPayoff.trim() || existing.expectedPayoff;
+  const notes = incoming.notes.trim() || existing.notes;
   const advanced = Math.max(existing.lastAdvancedChapter, incoming.lastAdvancedChapter);
   const progressed = advanced > existing.lastAdvancedChapter;
 
   return {
     ...existing,
-    startChapter: Math.min(existing.startChapter, incoming.startChapter),
-    type: preferRicherText(existing.type, incoming.type),
+    // Zero and unadvanced future plans are seeds, not established planting history.
+    startChapter: existing.startChapter > 0 && existing.lastAdvancedChapter > 0
+      ? existing.startChapter
+      : incoming.startChapter || existing.startChapter,
+    type: incoming.type.trim() || existing.type,
     status: mergeHookStatus(existing.status, incoming.status, progressed),
     lastAdvancedChapter: advanced,
     expectedPayoff,
@@ -156,6 +162,13 @@ function mergeHookRecord(existing: HookRecord, incoming: HookRecord): HookRecord
       notes,
     }),
     notes,
+    // Omission preserves metadata; explicit [] / false / 0 are real updates.
+    dependsOn: incoming.dependsOn ?? existing.dependsOn,
+    paysOffInArc: incoming.paysOffInArc ?? existing.paysOffInArc,
+    coreHook: incoming.coreHook ?? existing.coreHook,
+    halfLifeChapters: incoming.halfLifeChapters ?? existing.halfLifeChapters,
+    advancedCount: incoming.advancedCount ?? existing.advancedCount,
+    promoted: incoming.promoted ?? existing.promoted,
   };
 }
 
@@ -167,16 +180,6 @@ function mergeHookStatus(
   if (existing === "resolved" || incoming === "resolved") return "resolved";
   if (progressed || existing === "progressing" || incoming === "progressing") return "progressing";
   return existing;
-}
-
-function preferRicherText(primary: string, fallback: string): string {
-  const left = primary.trim();
-  const right = fallback.trim();
-
-  if (!left) return right;
-  if (!right) return left;
-  if (left === right) return left;
-  return right.length > left.length ? right : left;
 }
 
 function applyCurrentStatePatch(
