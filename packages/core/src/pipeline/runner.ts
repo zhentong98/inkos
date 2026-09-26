@@ -55,10 +55,12 @@ import {
   parseStateDegradedReviewNote,
   resolveStateDegradedBaseStatus,
   retrySettlementAfterValidationFailure,
+  settlementFormatValidation,
 } from "./chapter-state-recovery.js";
 import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
+import { hasUsableLegacySettlement } from "../agents/settler-parser.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
 import { computeRevisionGuidanceFingerprint, computeRevisionPlanFingerprint, loadRevisionPlanCache, saveRevisionPlanCache } from "./revision-plan-cache.js";
 import { selectBookReferenceContext } from "../references/reference-context.js";
@@ -1519,7 +1521,7 @@ export class PipelineRunner {
         contextPackage: reviseControlInput?.composed.contextPackage,
         ruleStack: reviseControlInput?.composed.ruleStack,
       });
-      let stateValidation = await stateValidator.validate(
+      let stateValidation = settlementFormatValidation(settledRevision, language) ?? await stateValidator.validate(
         revisedContent,
         targetChapter,
         baselineState,
@@ -2459,7 +2461,7 @@ export class PipelineRunner {
       allowReapply: true,
     });
     const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
-    let validation = await validator.validate(
+    let validation = settlementFormatValidation(repairedOutput, pipelineLang) ?? await validator.validate(
       content,
       targetChapter,
       oldState,
@@ -2599,7 +2601,7 @@ export class PipelineRunner {
       allowReapply: true,
     });
     const validator = new StateValidatorAgent(this.agentCtxFor("state-validator", bookId));
-    let validation = await validator.validate(
+    let validation = settlementFormatValidation(syncedOutput, pipelineLang) ?? await validator.validate(
       content,
       targetChapter,
       oldState,
@@ -3261,6 +3263,10 @@ ${matrix}`,
 
     return {
       ...analyzed,
+      // Reanalysis is a new settlement candidate, not evidence of successful
+      // parsing. A permissive semantic verdict must not bless sentinel truth.
+      settlementFormatFailure: analyzed.settlementFormatFailure
+        ?? (hasUsableLegacySettlement(analyzed) ? undefined : output.settlementFormatFailure ?? "missing_delta"),
       content: finalContent,
       wordCount: countChapterLength(finalContent, countingMode),
       postWriteErrors: [],

@@ -3,6 +3,16 @@ import {
   type RuntimeStateDelta,
 } from "../models/runtime-state.js";
 
+export type SettlementFormatFailure = "missing_delta" | "invalid_json" | "invalid_schema";
+
+/** Public diagnostics must never retain model values, parser messages or causes. */
+export class SettlerDeltaParseError extends Error {
+  constructor(readonly code: SettlementFormatFailure) {
+    super(`Runtime state delta format failure: ${code}`);
+    this.name = "SettlerDeltaParseError";
+  }
+}
+
 export interface SettlerDeltaOutput {
   readonly postSettlement: string;
   readonly runtimeStateDelta: RuntimeStateDelta;
@@ -25,15 +35,15 @@ export function parseSettlerDeltaOutput(content: string): SettlerDeltaOutput {
 
   const rawDelta = extract("RUNTIME_STATE_DELTA");
   if (!rawDelta) {
-    throw new Error("runtime state delta block is missing");
+    throw new SettlerDeltaParseError("missing_delta");
   }
 
   const jsonPayload = stripCodeFence(rawDelta);
   let parsed: unknown;
   try {
     parsed = JSON.parse(sanitizeJSON(jsonPayload));
-  } catch (error) {
-    throw new Error(`runtime state delta is not valid JSON: ${String(error)}`);
+  } catch {
+    throw new SettlerDeltaParseError("invalid_json");
   }
 
   try {
@@ -41,8 +51,8 @@ export function parseSettlerDeltaOutput(content: string): SettlerDeltaOutput {
       postSettlement: extract("POST_SETTLEMENT"),
       runtimeStateDelta: RuntimeStateDeltaSchema.parse(parsed),
     };
-  } catch (error) {
-    throw new Error(`runtime state delta failed schema validation: ${String(error)}`);
+  } catch {
+    throw new SettlerDeltaParseError("invalid_schema");
   }
 }
 

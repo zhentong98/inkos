@@ -6,8 +6,8 @@ import type { BookRules } from "../models/book-rules.js";
 import { buildWriterSystemPrompt, type FanficContext } from "./writer-prompts.js";
 import { buildSettlerSystemPrompt, buildSettlerUserPrompt } from "./settler-prompts.js";
 import { buildObserverSystemPrompt, buildObserverUserPrompt } from "./observer-prompts.js";
-import { parseSettlerDeltaOutput } from "./settler-delta-parser.js";
-import { parseSettlementOutput } from "./settler-parser.js";
+import { parseSettlerDeltaOutput, SettlerDeltaParseError, type SettlementFormatFailure } from "./settler-delta-parser.js";
+import { parseSettlementOutput, hasUsableLegacySettlement } from "./settler-parser.js";
 import { readGenreProfile, readBookRules } from "./rules-reader.js";
 import {
   detectCrossChapterRepetition,
@@ -103,6 +103,7 @@ export interface WriteChapterOutput {
   readonly wordCount: number;
   readonly preWriteCheck: string;
   readonly postSettlement: string;
+  readonly settlementFormatFailure?: SettlementFormatFailure;
   readonly runtimeStateDelta?: RuntimeStateDelta;
   readonly runtimeStateSnapshot?: RuntimeStateSnapshot;
   readonly updatedState: string;
@@ -371,6 +372,7 @@ export class WriterAgent extends BaseAgent {
       wordCount: surfaceNormalizedWordCount,
       preWriteCheck: creative.preWriteCheck,
       postSettlement: settlement.postSettlement,
+      settlementFormatFailure: settlement.settlementFormatFailure,
       runtimeStateDelta: resolvedRuntimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -468,6 +470,7 @@ export class WriterAgent extends BaseAgent {
       ),
       preWriteCheck: "",
       postSettlement: settlement.postSettlement,
+      settlementFormatFailure: settlement.settlementFormatFailure,
       runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -512,6 +515,7 @@ export class WriterAgent extends BaseAgent {
     readonly originalCharacterMatrix: string;
   }): Promise<{
     settlement: ReturnType<typeof parseSettlementOutput> & {
+      settlementFormatFailure?: SettlementFormatFailure;
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
     };
@@ -579,6 +583,7 @@ export class WriterAgent extends BaseAgent {
     );
 
     let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {
+      settlementFormatFailure?: SettlementFormatFailure;
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
     };
@@ -595,8 +600,27 @@ export class WriterAgent extends BaseAgent {
         updatedEmotionalArcs: "",
         updatedCharacterMatrix: "",
       };
-    } catch {
+    } catch (error) {
+      if (!(error instanceof SettlerDeltaParseError)) throw error;
       const settlement = parseSettlementOutput(response.content, params.genreProfile);
+      if (!hasUsableLegacySettlement(settlement)) {
+        // Keep body and prior truth available to the existing recovery flow.
+        // The marker forbids persistence until recovery or explicit degradation.
+        return {
+          settlement: {
+            settlementFormatFailure: error.code,
+            postSettlement: "",
+            updatedState: params.currentState,
+            updatedLedger: params.ledger,
+            updatedHooks: params.originalHooks,
+            chapterSummary: "",
+            updatedSubplots: "",
+            updatedEmotionalArcs: "",
+            updatedCharacterMatrix: "",
+          },
+          usage: response.usage,
+        };
+      }
       mergedSettlement = governedControlBlock
         ? {
             ...settlement,
@@ -627,6 +651,9 @@ export class WriterAgent extends BaseAgent {
     language: "zh" | "en" = "zh",
     options?: { readonly historicalRevision?: boolean },
   ): Promise<void> {
+    if (output.settlementFormatFailure) {
+      throw new Error("Cannot persist chapter with an unresolved settlement format failure");
+    }
     const baselineChapter = options?.historicalRevision ? output.chapterNumber - 1 : undefined;
     const baselineStoryDir = await resolveStoryContextDir(bookDir, baselineChapter);
     const chaptersDir = join(bookDir, "chapters");

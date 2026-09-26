@@ -8,6 +8,7 @@ import type { LengthLanguage } from "../utils/length-metrics.js";
 import {
   buildStateDegradedPersistenceOutput,
   retrySettlementAfterValidationFailure,
+  settlementFormatValidation,
 } from "./chapter-state-recovery.js";
 
 export async function validateChapterTruthPersistence(params: {
@@ -48,7 +49,7 @@ export async function validateChapterTruthPersistence(params: {
   let auditResult = params.auditResult;
 
   try {
-    validation = await params.validator.validate(
+    validation = settlementFormatValidation(persistenceOutput, params.language) ?? await params.validator.validate(
       params.content,
       params.chapterNumber,
       params.previousTruth.oldState,

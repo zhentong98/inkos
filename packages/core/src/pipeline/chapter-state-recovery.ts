@@ -46,6 +46,28 @@ export type SettlementRetryResult =
     readonly issues: ReadonlyArray<AuditIssue>;
   };
 
+/** Format failure is deterministic and cannot be pardoned by an LLM verdict. */
+export function settlementFormatValidation(
+  output: Pick<WriteChapterOutput, "settlementFormatFailure">,
+  language: LengthLanguage,
+): ValidationResult | null {
+  const code = output.settlementFormatFailure;
+  if (!code) return null;
+  // Only fixed host vocabulary reaches feedback/logs, even for malformed callers.
+  const safeCode = code === "missing_delta" || code === "invalid_json" || code === "invalid_schema"
+    ? code : "invalid_schema";
+  return {
+    passed: false,
+    repairRequired: true,
+    warnings: [{
+      category: "settlement_format",
+      description: language === "en"
+        ? `Settlement format failure (${safeCode}). Return a complete RUNTIME_STATE_DELTA block containing valid JSON that follows the supplied schema. No usable legacy state/hooks projection was available.`
+        : `状态结算格式错误（${safeCode}）。请按提供的结构返回完整的 RUNTIME_STATE_DELTA 有效 JSON 块。本次输出没有可用的旧版状态卡和伏笔投影。`,
+    }],
+  };
+}
+
 export async function retrySettlementAfterValidationFailure(
   params: SettlementRetryParams,
 ): Promise<SettlementRetryResult> {
@@ -74,7 +96,7 @@ export async function retrySettlementAfterValidationFailure(
 
   let retryValidation: ValidationResult;
   try {
-    retryValidation = await params.validator.validate(
+    retryValidation = settlementFormatValidation(retryOutput, params.language) ?? await params.validator.validate(
       params.content,
       params.chapterNumber,
       params.oldState,
@@ -169,6 +191,14 @@ export function buildStateDegradedPersistenceOutput(params: {
 }): WriteChapterOutput {
   return {
     ...params.output,
+    settlementFormatFailure: undefined,
+    ...(params.output.settlementFormatFailure ? {
+      postSettlement: "",
+      chapterSummary: "",
+      updatedSubplots: "",
+      updatedEmotionalArcs: "",
+      updatedCharacterMatrix: "",
+    } : {}),
     runtimeStateDelta: undefined,
     runtimeStateSnapshot: undefined,
     updatedState: params.oldState,

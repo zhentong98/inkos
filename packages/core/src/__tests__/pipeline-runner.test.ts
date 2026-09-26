@@ -2396,6 +2396,46 @@ describe("PipelineRunner", () => {
     await rm(root, { recursive: true, force: true });
   });
 
+  it.each([
+    { markedOriginal: true, usableAnalysis: false },
+    { markedOriginal: false, usableAnalysis: false },
+    { markedOriginal: true, usableAnalysis: true },
+  ])("validates replacement truth after body changes (marked=$markedOriginal, usable=$usableAnalysis)", async ({ markedOriginal, usableAnalysis }) => {
+    const { root, runner, state, bookId } = await createRunnerFixture();
+    const revisedBody = "Final revised chapter body with a complete arrival at the harbor.";
+    vi.spyOn(WriterAgent.prototype, "writeChapter").mockResolvedValue(createWriterOutput({
+      content: "Original draft body.", wordCount: 20,
+      settlementFormatFailure: markedOriginal ? "invalid_json" : undefined,
+    }));
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(createAuditResult({ passed: false, issues: [CRITICAL_ISSUE], overallScore: 40 }))
+      .mockResolvedValueOnce(createAuditResult({ passed: true, issues: [], overallScore: 95 }));
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(createReviseOutput({ revisedContent: revisedBody, wordCount: revisedBody.length }));
+    const analysis = vi.spyOn(ChapterAnalyzerAgent.prototype, "analyzeChapter").mockResolvedValue(createAnalyzedOutput({
+      content: "", wordCount: 0,
+      updatedState: usableAnalysis ? "Validated replacement state" : "(state card not updated)",
+      updatedHooks: usableAnalysis ? "No pending hooks." : "(hooks pool not updated)",
+    }));
+    const settle = vi.spyOn(WriterAgent.prototype, "settleChapterState").mockImplementation(async (input) => createWriterOutput({
+      chapterNumber: input.chapterNumber, title: input.title, content: input.content,
+      updatedState: "Recovered replacement state", updatedHooks: "No pending hooks.",
+    }));
+    const validator = vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({ passed: true, warnings: [] });
+    try {
+      const result = await runner.writeNextChapter(bookId, revisedBody.length);
+      expect(analysis).toHaveBeenCalledTimes(1);
+      expect(settle).toHaveBeenCalledTimes(usableAnalysis ? 0 : 1);
+      expect(validator).toHaveBeenCalledTimes(1);
+      if (!usableAnalysis) expect(settle).toHaveBeenCalledWith(expect.objectContaining({
+        content: revisedBody, validationFeedback: expect.stringContaining(markedOriginal ? "invalid_json" : "missing_delta"),
+      }));
+      expect(result.status).not.toBe("state-degraded");
+      expect(await readFile(join(state.bookDir(bookId), "story/current_state.md"), "utf-8"))
+        .toBe(usableAnalysis ? "Validated replacement state" : "Recovered replacement state");
+      expect(await readFile(join(state.bookDir(bookId), "chapters/0001_Test_Chapter.md"), "utf-8")).toContain(revisedBody);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  });
+
   it("persists structured runtime state and rendered projections from writer delta output", async () => {
     const { root, runner, state, bookId } = await createRunnerFixture({
     });
@@ -5069,6 +5109,41 @@ describe("PipelineRunner", () => {
     } finally {
       await rm(root, { recursive: true, force: true });
     }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
+
+  it.each(["revise", "resync", "repair"] as const)("keeps native %s atomic after two settlement format failures", async (mode) => {
+    const { root, runner, state, bookId, chaptersDir } = await createRevisionGateFixture("always");
+    const bookDir = state.bookDir(bookId);
+    const storyDir = join(bookDir, "story");
+    if (mode === "repair") {
+      const index = await state.loadChapterIndex(bookId);
+      await state.saveChapterIndex(bookId, index.map((chapter) => ({ ...chapter, status: "state-degraded" as const })));
+    }
+    const beforeIndex = await state.loadChapterIndex(bookId);
+    const chapterPath = join(chaptersDir, "0001_Test_Chapter.md");
+    const paths = [chapterPath, join(storyDir, "current_state.md"), join(storyDir, "pending_hooks.md")];
+    const before = await Promise.all(paths.map((path) => readFile(path, "utf-8")));
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({ passed: false, issues: [CRITICAL_ISSUE] }));
+    const settle = vi.spyOn(WriterAgent.prototype, "settleChapterState").mockImplementation(async (input) => ({
+      ...await createSettledRevisionOutput(input), settlementFormatFailure: "invalid_schema",
+    }));
+    const validator = vi.spyOn(StateValidatorAgent.prototype, "validate").mockResolvedValue({ passed: true, warnings: [] });
+    try {
+      if (mode === "revise") {
+        const result = await runner.reviseDraft(bookId, 1, "rework");
+        expect(result.applied).toBe(false);
+        expect(result.auditIssues?.[0]?.description).toContain("invalid_schema");
+      } else {
+        const operation = mode === "repair" ? runner.repairChapterState(bookId, 1) : runner.resyncChapterArtifacts(bookId, 1);
+        await expect(operation).rejects.toThrow(/invalid_schema/);
+      }
+      expect(settle).toHaveBeenCalledTimes(2);
+      expect(settle.mock.calls[1]?.[0]).toMatchObject({ baselineChapter: 0, validationFeedback: expect.stringContaining("invalid_schema") });
+      expect(validator).not.toHaveBeenCalled();
+      expect(await Promise.all(paths.map((path) => readFile(path, "utf-8")))).toEqual(before);
+      expect(await state.loadChapterIndex(bookId)).toEqual(beforeIndex);
+      expect(await listChapterVersions(bookDir, 1)).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
   }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
 
   it("applies a no-improvement manual revision when revisionGate is lenient", async () => {
