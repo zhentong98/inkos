@@ -1,13 +1,14 @@
 import { createHash, randomUUID } from "node:crypto";
-import { readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
+import { lstat, readFile, readdir, rename, rm, writeFile } from "node:fs/promises";
 import { join } from "node:path";
+import type { ActivatedSkillGuidance } from "../agent/skill-tool.js";
 import type { BookConfig } from "../models/book.js";
 import type { PlanChapterOutput } from "../agents/planner.js";
 import { resolveStoryContextDir } from "../utils/story-context.js";
 import { loadPersistedPlan } from "./persisted-governed-plan.js";
 
 // Bump when planner input semantics change. This is a cache, never authority.
-const CACHE_VERSION = 1;
+const CACHE_VERSION = 2;
 const SNAPSHOT_INPUTS = [
   "current_state.md", "pending_hooks.md", "current_focus.md", "chapter_summaries.md",
   "character_matrix.md", "subplot_board.md", "emotional_arcs.md", "volume_summaries.md",
@@ -62,6 +63,7 @@ export async function computeRevisionPlanFingerprint(
   chapterNumber: number,
   baselineChapter: number,
   externalContext?: string,
+  plannerGuidanceFingerprint?: string,
 ): Promise<string> {
   if (!Number.isInteger(chapterNumber) || chapterNumber < 1 || baselineChapter !== chapterNumber - 1) {
     throw new Error("Revision plan cache requires the immediately preceding chapter snapshot");
@@ -103,8 +105,73 @@ export async function computeRevisionPlanFingerprint(
   const { status: _status, createdAt: _createdAt, updatedAt: _updatedAt, ...settings } = book;
   return digest(JSON.stringify(canonical({
     version: CACHE_VERSION, chapterNumber, baselineChapter, settings,
-    externalContext: externalContext ?? null, inputs,
+    externalContext: externalContext ?? null, plannerGuidanceFingerprint: plannerGuidanceFingerprint ?? null, inputs,
   })));
+}
+
+// Match retrieveSkillResources/listSkillTextFiles: root SKILL.md is already
+// represented by the activated body; retrieval searches only static text refs.
+const MAX_SKILL_RESOURCE_BYTES = 512 * 1024;
+
+async function guidanceReferenceCorpus(baseDir: string): Promise<Record<string, string>> {
+  const corpus: Record<string, string> = {};
+  async function visit(directory: string, prefix: string) {
+    const info = await lstat(directory);
+    if (info.isSymbolicLink() || !info.isDirectory()) throw new Error("Unsafe skill reference directory");
+    const entries = await readdir(directory, { withFileTypes: true });
+    entries.sort((left, right) => left.name < right.name ? -1 : left.name > right.name ? 1 : 0);
+    for (const entry of entries) {
+      if (entry.isSymbolicLink()) continue;
+      const path = join(directory, entry.name);
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await visit(path, relativePath);
+      } else if (entry.isFile() && relativePath !== "SKILL.md" && /\.(?:md|txt)$/i.test(entry.name)) {
+        const before = await lstat(path);
+        if (before.isSymbolicLink()) throw new Error("Skill resource changed during fingerprinting");
+        if (!before.isFile() || before.size > MAX_SKILL_RESOURCE_BYTES) continue;
+        const bytes = await readFile(path);
+        const after = await lstat(path);
+        if (after.isSymbolicLink() || before.ino !== after.ino || before.size !== after.size
+          || before.mtimeMs !== after.mtimeMs || bytes.length > MAX_SKILL_RESOURCE_BYTES) {
+          throw new Error("Skill resource changed during fingerprinting");
+        }
+        if (bytes.includes(0)) continue;
+        corpus[relativePath] = digest(bytes);
+      }
+    }
+    const after = await lstat(directory);
+    if (after.isSymbolicLink() || info.ino !== after.ino || info.mtimeMs !== after.mtimeMs) {
+      throw new Error("Skill reference directory changed during fingerprinting");
+    }
+  }
+  await visit(baseDir, "");
+  return corpus;
+}
+
+/** Fingerprint the supplied guidance and all static references the hydrator
+ * could select. Explicit resources bypass disk exactly as hydration does.
+ * An unreadable/unsafe corpus has unknown provenance: null means bypass cache,
+ * never substitute an empty corpus or silently certify partial guidance.
+ */
+export async function computeRevisionGuidanceFingerprint(
+  activations: ReadonlyArray<ActivatedSkillGuidance> | undefined,
+): Promise<string | null> {
+  try {
+    const inputs = await Promise.all((activations ?? []).map(async ({ skill, resources }) => ({
+      id: skill.id,
+      name: skill.name,
+      description: skill.description,
+      body: skill.body,
+      resources,
+      corpus: resources.length === 0 && skill.baseDir
+        ? await guidanceReferenceCorpus(skill.baseDir)
+        : null,
+    })));
+    return digest(JSON.stringify(canonical({ version: CACHE_VERSION, inputs })));
+  } catch {
+    return null;
+  }
 }
 
 function paths(bookDir: string, chapterNumber: number) {

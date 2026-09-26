@@ -60,7 +60,7 @@ import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
-import { computeRevisionPlanFingerprint, loadRevisionPlanCache, saveRevisionPlanCache } from "./revision-plan-cache.js";
+import { computeRevisionGuidanceFingerprint, computeRevisionPlanFingerprint, loadRevisionPlanCache, saveRevisionPlanCache } from "./revision-plan-cache.js";
 import { selectBookReferenceContext } from "../references/reference-context.js";
 import type { ActivatedSkillGuidance } from "../agent/skill-tool.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
@@ -3861,13 +3861,14 @@ ${matrix}`,
       readonly baselineChapter?: number;
     },
   ): Promise<PlanChapterOutput> {
-    const revisionFingerprint = options?.baselineChapter !== undefined
-      && options?.reuseExistingIntentWhenContextMissing
-      // Skills can hydrate additional operation-scoped references at chat time.
-      // Do not reuse or stamp a plan whose guidance is not in the cache key.
-      && !this.currentActivatedSkills()?.length
-      ? await computeRevisionPlanFingerprint(book, bookDir, chapterNumber, options.baselineChapter, externalContext)
-      : undefined;
+    const fingerprintRevisionInputs = async () => {
+      if (options?.baselineChapter === undefined || !options.reuseExistingIntentWhenContextMissing) return undefined;
+      const guidance = await computeRevisionGuidanceFingerprint(this.currentActivatedSkills());
+      // Unknown or unreadable dynamic guidance must never establish cache provenance.
+      if (guidance === null) return undefined;
+      return computeRevisionPlanFingerprint(book, bookDir, chapterNumber, options.baselineChapter, externalContext, guidance);
+    };
+    const revisionFingerprint = await fingerprintRevisionInputs();
     if (revisionFingerprint) {
       const cached = await loadRevisionPlanCache(bookDir, chapterNumber, revisionFingerprint);
       if (cached) return cached;
@@ -3893,7 +3894,7 @@ ${matrix}`,
     // skip the planner LLM call when no new context is supplied.
     await savePersistedPlan(bookDir, plan);
     if (revisionFingerprint && options?.baselineChapter !== undefined
-      && revisionFingerprint === await computeRevisionPlanFingerprint(book, bookDir, chapterNumber, options.baselineChapter, externalContext)
+      && revisionFingerprint === await fingerprintRevisionInputs()
       && await loadPersistedPlan(bookDir, chapterNumber)) {
       await saveRevisionPlanCache(bookDir, chapterNumber, revisionFingerprint).catch(() => {
         this.logWarn(book.language ?? "zh", {

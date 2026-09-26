@@ -4969,6 +4969,10 @@ describe("PipelineRunner", () => {
           skill: { id: "review-method", name: "Review method", description: "Test method", body, source: "project" }, resources: [],
         }] }, () => runner.reviseDraft(bookId, 1, "rework", "New user brief."));
         expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe(`Plan generation ${expectedGeneration}`);
+        await runner.runWithAgentContext({ activatedSkills: [{
+          skill: { id: "review-method", name: "Review method", description: "Test method", body, source: "project" }, resources: [],
+        }] }, () => runner.reviseDraft(bookId, 1, "rework", "New user brief."));
+        expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe(`Plan generation ${expectedGeneration}`);
       }
       await runner.reviseDraft(bookId, 1, "rework", "New user brief.");
       expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe("Plan generation 6");

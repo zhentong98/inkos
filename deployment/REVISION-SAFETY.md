@@ -8,8 +8,9 @@ Historical plan reuse now requires provenance from a newly generated plan, with
 matching preceding snapshot, canonical foundations/roles, preceding chapter body,
 stable book settings and external instructions. A sidecar pairs the input hash
 with both plan and intent artifact hashes. Missing, legacy, corrupt or mismatched
-metadata causes a fresh plan. Operation-scoped skills bypass reuse and provenance
-creation because they may hydrate additional references during the model call.
+metadata causes a fresh plan. Skill bodies, supplied resources and the eligible static reference corpus are
+also fingerprinted, so the default native review skills can safely reuse plans.
+Unreadable or unsafe skill inputs bypass reuse and provenance creation.
 Later truth and later chapter bodies are excluded. Prior temporal guards remain.
 
 All manual revision modes retain the original body when the candidate falls

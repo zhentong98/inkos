@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -7,6 +7,8 @@ import type { PlanChapterOutput } from "../agents/planner.js";
 import { savePersistedPlan } from "../pipeline/persisted-governed-plan.js";
 
 import * as cache from "../pipeline/revision-plan-cache.js";
+import { loadBuiltinAgentSkills } from "../skills/builtin-loader.js";
+import { resolveProductionSkillActivations } from "../skills/production-bindings.js";
 const dirs: string[] = [];
 afterEach(async () => { await Promise.all(dirs.splice(0).map((dir) => rm(dir, { recursive: true, force: true }))); });
 const book: BookConfig = {
@@ -141,5 +143,114 @@ describe("revision plan cache", () => {
     await put(dir, "story/runtime/chapter-0003.plan.md", "Invalid memo");
     await expect(cache.saveRevisionPlanCache(dir, 3, key)).rejects.toThrow();
     expect(await cache.loadRevisionPlanCache(dir, 3, key)).toBeNull();
+  });
+});
+
+
+describe("revision planner skill guidance provenance", () => {
+  async function activationFixture() {
+    const baseDir = await mkdtemp(join(tmpdir(), "inkos-guidance-cache-"));
+    dirs.push(baseDir);
+    await put(baseDir, "SKILL.md", "Disk manifest is not the already activated body");
+    await put(baseDir, "references/planning.md", "Keep continuity with preceding events.");
+    return {
+      skill: { id: "inkos-long-writing", name: "Long Writing", description: "Novel guidance", body: "Plan cohesive scenes.", source: "builtin" as const, baseDir },
+      resources: [],
+    };
+  }
+
+  it("reuses native built-in guidance with a stable static reference corpus", async () => {
+    const activation = await activationFixture();
+    const key = await cache.computeRevisionGuidanceFingerprint([activation]);
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(await cache.computeRevisionGuidanceFingerprint([activation])).toBe(key);
+    expect(await cache.computeRevisionGuidanceFingerprint(undefined)).toBe(await cache.computeRevisionGuidanceFingerprint([]));
+    const dir = await fixture();
+    await persist(dir);
+    const planKey = await cache.computeRevisionPlanFingerprint(book, dir, 3, 2, undefined, key!);
+    await cache.saveRevisionPlanCache(dir, 3, planKey);
+    expect((await cache.loadRevisionPlanCache(dir, 3, planKey))?.memo.goal).toBe("Recover the ledger");
+  });
+
+  it("supports the real native long-review default skill activations", async () => {
+    const { skills } = await loadBuiltinAgentSkills();
+    const activations = resolveProductionSkillActivations(skills, "longReview");
+    expect(activations.map(({ skill }) => skill.id)).toEqual(["inkos-long-writing", "inkos-story-review"]);
+    const key = await cache.computeRevisionGuidanceFingerprint(activations);
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(await cache.computeRevisionGuidanceFingerprint(activations)).toBe(key);
+  });
+
+  it("invalidates the plan when the supplied guidance fingerprint changes", async () => {
+    const dir = await fixture();
+    const first = await cache.computeRevisionPlanFingerprint(book, dir, 3, 2, undefined, "a".repeat(64));
+    const second = await cache.computeRevisionPlanFingerprint(book, dir, 3, 2, undefined, "b".repeat(64));
+    expect(first).not.toBe(second);
+  });
+
+  it("invalidates changed bodies, descriptions, names, skill IDs and activation membership", async () => {
+    const activation = await activationFixture();
+    const first = await cache.computeRevisionGuidanceFingerprint([activation]);
+    for (const field of ["body", "name", "description", "id"] as const) {
+      expect(await cache.computeRevisionGuidanceFingerprint([{ ...activation, skill: { ...activation.skill, [field]: "Changed guidance" } }])).not.toBe(first);
+    }
+    expect(await cache.computeRevisionGuidanceFingerprint([])).not.toBe(first);
+    expect(await cache.computeRevisionGuidanceFingerprint([activation, { ...activation, skill: { ...activation.skill, id: "inkos-story-review" } }])).not.toBe(first);
+  });
+
+  it("invalidates changed, added and removed eligible references", async () => {
+    const activation = await activationFixture();
+    const key = await cache.computeRevisionGuidanceFingerprint([activation]);
+    await put(activation.skill.baseDir, "references/planning.md", "Different scene guidance.");
+    const changed = await cache.computeRevisionGuidanceFingerprint([activation]);
+    expect(changed).not.toBe(key);
+    await put(activation.skill.baseDir, "references/nested/review.TXT", "Review scene causality.");
+    expect(await cache.computeRevisionGuidanceFingerprint([activation])).not.toBe(changed);
+    await rm(join(activation.skill.baseDir, "references/planning.md"));
+    await rm(join(activation.skill.baseDir, "references/nested/review.TXT"));
+    expect(await cache.computeRevisionGuidanceFingerprint([activation])).not.toBe(key);
+  });
+
+  it("excludes manifest, non-text, oversized, binary and symlink references like the hydrator", async () => {
+    const activation = await activationFixture();
+    const key = await cache.computeRevisionGuidanceFingerprint([activation]);
+    await put(activation.skill.baseDir, "SKILL.md", "Changed manifest does not replace supplied skill.body");
+    await put(activation.skill.baseDir, "ignored.json", "A non-text resource");
+    await put(activation.skill.baseDir, "oversized.md", "x".repeat(512 * 1024 + 1));
+    await put(activation.skill.baseDir, "binary.md", "A binary\0resource");
+    await symlink(join(activation.skill.baseDir, "references/planning.md"), join(activation.skill.baseDir, "linked.md"));
+    expect(await cache.computeRevisionGuidanceFingerprint([activation])).toBe(key);
+  });
+
+  it("hashes supplied resources without consulting missing on-disk references", async () => {
+    const activation = await activationFixture();
+    const supplied = { ...activation, resources: [{ path: "reference.md", heading: "Scene", body: "Explicit guidance", charStart: 0, charEnd: 17 }] };
+    const key = await cache.computeRevisionGuidanceFingerprint([supplied]);
+    await rm(activation.skill.baseDir, { recursive: true });
+    expect(key).toMatch(/^[a-f0-9]{64}$/);
+    expect(await cache.computeRevisionGuidanceFingerprint([supplied])).toBe(key);
+    expect(await cache.computeRevisionGuidanceFingerprint([{ ...supplied, resources: [{ ...supplied.resources[0]!, body: "Changed explicit guidance" }] }])).not.toBe(key);
+    expect(await cache.computeRevisionGuidanceFingerprint([{ skill: { ...activation.skill, baseDir: undefined }, resources: [] }])).toMatch(/^[a-f0-9]{64}$/);
+  });
+
+  it("bypasses caching when an implicit reference root is missing or a symlink", async () => {
+    const activation = await activationFixture();
+    const alias = activation.skill.baseDir + "-alias";
+    dirs.push(alias);
+    await symlink(activation.skill.baseDir, alias);
+    expect(await cache.computeRevisionGuidanceFingerprint([{ ...activation, skill: { ...activation.skill, baseDir: alias } }])).toBeNull();
+    await rm(activation.skill.baseDir, { recursive: true });
+    expect(await cache.computeRevisionGuidanceFingerprint([activation])).toBeNull();
+  });
+
+  it.skipIf(process.getuid?.() === 0)("bypasses caching on resource read errors instead of certifying an empty corpus", async () => {
+    const activation = await activationFixture();
+    const path = join(activation.skill.baseDir, "references/planning.md");
+    await chmod(path, 0);
+    try {
+      expect(await cache.computeRevisionGuidanceFingerprint([activation])).toBeNull();
+    } finally {
+      await chmod(path, 0o600);
+    }
   });
 });
