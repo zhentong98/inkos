@@ -3267,6 +3267,9 @@ ${matrix}`,
       // parsing. A permissive semantic verdict must not bless sentinel truth.
       settlementFormatFailure: analyzed.settlementFormatFailure
         ?? (hasUsableLegacySettlement(analyzed) ? undefined : output.settlementFormatFailure ?? "missing_delta"),
+      settlementSchemaIssues: analyzed.settlementFormatFailure
+        ? analyzed.settlementSchemaIssues
+        : hasUsableLegacySettlement(analyzed) ? undefined : output.settlementSchemaIssues,
       content: finalContent,
       wordCount: countChapterLength(finalContent, countingMode),
       postWriteErrors: [],

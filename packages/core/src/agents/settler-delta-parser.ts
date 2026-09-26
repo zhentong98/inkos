@@ -1,3 +1,4 @@
+import { settlementSchemaIssues, sanitizeSettlementSchemaIssues } from "./settlement-schema-contract.js";
 import {
   RuntimeStateDeltaSchema,
   type RuntimeStateDelta,
@@ -7,9 +8,12 @@ export type SettlementFormatFailure = "missing_delta" | "invalid_json" | "invali
 
 /** Public diagnostics must never retain model values, parser messages or causes. */
 export class SettlerDeltaParseError extends Error {
-  constructor(readonly code: SettlementFormatFailure) {
+  readonly schemaIssues: readonly string[];
+
+  constructor(readonly code: SettlementFormatFailure, schemaIssues: readonly string[] = []) {
     super(`Runtime state delta format failure: ${code}`);
     this.name = "SettlerDeltaParseError";
+    this.schemaIssues = sanitizeSettlementSchemaIssues(schemaIssues);
   }
 }
 
@@ -46,14 +50,14 @@ export function parseSettlerDeltaOutput(content: string): SettlerDeltaOutput {
     throw new SettlerDeltaParseError("invalid_json");
   }
 
-  try {
-    return {
-      postSettlement: extract("POST_SETTLEMENT"),
-      runtimeStateDelta: RuntimeStateDeltaSchema.parse(parsed),
-    };
-  } catch {
-    throw new SettlerDeltaParseError("invalid_schema");
+  const result = RuntimeStateDeltaSchema.safeParse(parsed);
+  if (!result.success) {
+    throw new SettlerDeltaParseError("invalid_schema", settlementSchemaIssues(result.error.issues));
   }
+  return {
+    postSettlement: extract("POST_SETTLEMENT"),
+    runtimeStateDelta: result.data,
+  };
 }
 
 function stripCodeFence(value: string): string {

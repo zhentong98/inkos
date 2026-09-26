@@ -58,3 +58,18 @@ describe("settler hook identity contract", () => {
     expect(prompt).toContain("H012");
   });
 });
+
+
+it("supplies machine-readable complete input types and enums, not just a single example", () => {
+  const prompt = buildSettlerSystemPrompt(BOOK, GENRE, null, "zh");
+  const block = prompt.match(/<runtime-state-input-schema>\s*([\s\S]*?)\s*<\/runtime-state-input-schema>/)?.[1];
+  expect(block).toBeDefined();
+  const schema = JSON.parse(block!);
+  const props = schema.properties;
+  expect(props.hookOps.properties.upsert.items.properties.status.enum).toEqual(["open", "progressing", "deferred", "resolved"]);
+  expect(props.currentStatePatch.properties.currentGoal.type).toBe("string");
+  expect(props.chapter.type).toBe("integer");
+  expect(props.hookOps.properties.upsert.items.required).toEqual(expect.arrayContaining(["hookId", "startChapter", "type", "status", "lastAdvancedChapter"]));
+  expect(props.notes.type).toBe("array");
+  expect(props.notes.items.type).toBe("string");
+});

@@ -5,7 +5,7 @@ import { join } from "node:path";
 import { WriterAgent, type WriteChapterOutput } from "../agents/writer.js";
 import { parseSettlerDeltaOutput } from "../agents/settler-delta-parser.js";
 import { validateChapterTruthPersistence } from "../pipeline/chapter-truth-validation.js";
-import { buildStateDegradedPersistenceOutput, retrySettlementAfterValidationFailure } from "../pipeline/chapter-state-recovery.js";
+import { buildStateDegradedPersistenceOutput, retrySettlementAfterValidationFailure, settlementFormatValidation } from "../pipeline/chapter-state-recovery.js";
 import type { BookConfig } from "../models/book.js";
 
 const book: BookConfig = { id: "fixture", title: "Fixture", platform: "other", genre: "other", status: "active", targetChapters: 10, chapterWordCount: 2000, language: "en", createdAt: "2026-01-01T00:00:00.000Z", updatedAt: "2026-01-01T00:00:00.000Z" };
@@ -110,5 +110,46 @@ describe("settlement format failures", () => {
     await writer.saveChapter(dir, restored, false, "en");
     expect(await readFile(join(dir, "story/current_state.md"), "utf8")).toBe("Prior chapter state");
     expect(await readdir(join(dir, "chapters"))).toEqual(["0002_Arrival.md"]);
+  });
+});
+
+
+describe("safe settlement schema feedback", () => {
+  it("carries actual schema field failures from parser through writer into recovery feedback", async () => {
+    const { dir, writer } = await writerFixture();
+    const payload = { chapter: 2, hookOps: { upsert: [{ hookId: "H1", startChapter: 1, type: "mystery", status: secret, lastAdvancedChapter: "two" }] }, notes: { [secret]: "private" } };
+    vi.spyOn(WriterAgent.prototype as never, "chat" as never)
+      .mockResolvedValueOnce({ content: "Facts", usage })
+      .mockResolvedValueOnce({ content: `=== RUNTIME_STATE_DELTA ===\n${JSON.stringify(payload)}`, usage });
+    const failed = await writer.settleChapterState({ book, bookDir: dir, chapterNumber: 2, title: "Arrival", content: "Ada reaches the harbor." });
+    const validation = settlementFormatValidation(failed, "en")!;
+    expect(validation.warnings[0]?.description).toContain("hookOps.upsert.*.status: invalid_enum_value");
+    expect(validation.warnings[0]?.description).toContain("hookOps.upsert.*.lastAdvancedChapter: invalid_type");
+    expect(validation.warnings[0]?.description).toContain("notes: invalid_type");
+    expect(JSON.stringify(failed)).not.toContain(secret);
+    const recoveryWriter = { settleChapterState: vi.fn().mockResolvedValue(output()) };
+    await retrySettlementAfterValidationFailure({ writer: recoveryWriter, validator: { validate: vi.fn().mockResolvedValue({ passed: true, warnings: [] }) }, book, bookDir: dir, chapterNumber: 2, title: "Arrival", content: "Ada reaches the harbor.", oldState: "prior", oldHooks: "prior", originalValidation: validation, language: "en" });
+    expect(recoveryWriter.settleChapterState).toHaveBeenCalledTimes(1);
+    expect(recoveryWriter.settleChapterState).toHaveBeenCalledWith(expect.objectContaining({ validationFeedback: expect.stringContaining("hookOps.upsert.*.status: invalid_enum_value") }));
+  });
+
+  it("drops forged diagnostic strings and bounds repeated schema diagnostics", () => {
+    const malformed = {
+      chapter: 0,
+      currentStatePatch: { currentLocation: [], protagonistState: [], currentGoal: [], currentConstraint: [], currentAlliances: [], currentConflict: [] },
+      hookOps: { upsert: Array.from({ length: 50 }, () => ({ status: secret })), mention: [null], resolve: [null], defer: [null] },
+      notes: [null],
+    };
+    let caught: any;
+    try { parseSettlerDeltaOutput(`=== RUNTIME_STATE_DELTA ===\n${JSON.stringify(malformed)}`); } catch (error) { caught = error; }
+    expect(caught.schemaIssues.length).toBeGreaterThan(0);
+    expect(caught.schemaIssues).toHaveLength(12);
+    expect(new Set(caught.schemaIssues).size).toBe(caught.schemaIssues.length);
+    const forged = output({ settlementFormatFailure: "invalid_schema", settlementSchemaIssues: [secret, `notes.${secret}: invalid_type`, "chapter: invalid_type"] } as Partial<WriteChapterOutput>);
+    const serialized = JSON.stringify(settlementFormatValidation(forged, "en"));
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("chapter: invalid_type");
+    const restored = buildStateDegradedPersistenceOutput({ output: forged, oldState: "old", oldHooks: "old", oldLedger: "" });
+    expect(restored.settlementSchemaIssues).toBeUndefined();
   });
 });

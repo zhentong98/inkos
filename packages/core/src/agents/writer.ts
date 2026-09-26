@@ -104,6 +104,7 @@ export interface WriteChapterOutput {
   readonly preWriteCheck: string;
   readonly postSettlement: string;
   readonly settlementFormatFailure?: SettlementFormatFailure;
+  readonly settlementSchemaIssues?: readonly string[];
   readonly runtimeStateDelta?: RuntimeStateDelta;
   readonly runtimeStateSnapshot?: RuntimeStateSnapshot;
   readonly updatedState: string;
@@ -373,6 +374,7 @@ export class WriterAgent extends BaseAgent {
       preWriteCheck: creative.preWriteCheck,
       postSettlement: settlement.postSettlement,
       settlementFormatFailure: settlement.settlementFormatFailure,
+      settlementSchemaIssues: settlement.settlementSchemaIssues,
       runtimeStateDelta: resolvedRuntimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -471,6 +473,7 @@ export class WriterAgent extends BaseAgent {
       preWriteCheck: "",
       postSettlement: settlement.postSettlement,
       settlementFormatFailure: settlement.settlementFormatFailure,
+      settlementSchemaIssues: settlement.settlementSchemaIssues,
       runtimeStateDelta: runtimeStateArtifacts?.resolvedDelta ?? settlement.runtimeStateDelta,
       runtimeStateSnapshot: runtimeStateArtifacts?.snapshot ?? settlement.runtimeStateSnapshot,
       updatedState: runtimeStateArtifacts?.currentStateMarkdown ?? settlement.updatedState,
@@ -516,6 +519,7 @@ export class WriterAgent extends BaseAgent {
   }): Promise<{
     settlement: ReturnType<typeof parseSettlementOutput> & {
       settlementFormatFailure?: SettlementFormatFailure;
+      settlementSchemaIssues?: readonly string[];
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
     };
@@ -584,6 +588,7 @@ export class WriterAgent extends BaseAgent {
 
     let mergedSettlement: ReturnType<typeof parseSettlementOutput> & {
       settlementFormatFailure?: SettlementFormatFailure;
+      settlementSchemaIssues?: readonly string[];
       runtimeStateDelta?: RuntimeStateDelta;
       runtimeStateSnapshot?: RuntimeStateSnapshot;
     };
@@ -609,6 +614,7 @@ export class WriterAgent extends BaseAgent {
         return {
           settlement: {
             settlementFormatFailure: error.code,
+            settlementSchemaIssues: error.schemaIssues,
             postSettlement: "",
             updatedState: params.currentState,
             updatedLedger: params.ledger,

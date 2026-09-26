@@ -1,3 +1,4 @@
+import { sanitizeSettlementSchemaIssues } from "../agents/settlement-schema-contract.js";
 import type { AuditIssue } from "../agents/continuity.js";
 import type {
   ValidationResult,
@@ -48,7 +49,7 @@ export type SettlementRetryResult =
 
 /** Format failure is deterministic and cannot be pardoned by an LLM verdict. */
 export function settlementFormatValidation(
-  output: Pick<WriteChapterOutput, "settlementFormatFailure">,
+  output: Pick<WriteChapterOutput, "settlementFormatFailure" | "settlementSchemaIssues">,
   language: LengthLanguage,
 ): ValidationResult | null {
   const code = output.settlementFormatFailure;
@@ -56,14 +57,16 @@ export function settlementFormatValidation(
   // Only fixed host vocabulary reaches feedback/logs, even for malformed callers.
   const safeCode = code === "missing_delta" || code === "invalid_json" || code === "invalid_schema"
     ? code : "invalid_schema";
+  const details = safeCode === "invalid_schema" ? sanitizeSettlementSchemaIssues(output.settlementSchemaIssues) : [];
+  const suffix = details.length ? ` Fields: ${details.join("; ")}.` : "";
   return {
     passed: false,
     repairRequired: true,
     warnings: [{
       category: "settlement_format",
       description: language === "en"
-        ? `Settlement format failure (${safeCode}). Return a complete RUNTIME_STATE_DELTA block containing valid JSON that follows the supplied schema. No usable legacy state/hooks projection was available.`
-        : `状态结算格式错误（${safeCode}）。请按提供的结构返回完整的 RUNTIME_STATE_DELTA 有效 JSON 块。本次输出没有可用的旧版状态卡和伏笔投影。`,
+        ? `Settlement format failure (${safeCode}). Return a complete RUNTIME_STATE_DELTA block containing valid JSON that follows the supplied schema. No usable legacy state/hooks projection was available.${suffix}`
+        : `状态结算格式错误（${safeCode}）。请按提供的结构返回完整的 RUNTIME_STATE_DELTA 有效 JSON 块。本次输出没有可用的旧版状态卡和伏笔投影。${suffix}`,
     }],
   };
 }
@@ -192,6 +195,7 @@ export function buildStateDegradedPersistenceOutput(params: {
   return {
     ...params.output,
     settlementFormatFailure: undefined,
+    settlementSchemaIssues: undefined,
     ...(params.output.settlementFormatFailure ? {
       postSettlement: "",
       chapterSummary: "",

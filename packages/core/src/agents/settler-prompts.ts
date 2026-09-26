@@ -1,3 +1,4 @@
+import { settlementInputSchema } from "./settlement-schema-contract.js";
 import type { BookConfig } from "../models/book.js";
 import type { GenreProfile } from "../models/genre-profile.js";
 import type { BookRules } from "../models/book-rules.js";
@@ -68,6 +69,12 @@ ${hookRules}${fullCastBlock}
 ## 输出格式（必须严格遵循）
 
 ${buildSettlerOutputFormat(genreProfile)}
+
+## 完整输入结构（与程序校验使用同一份定义）
+以下是 RUNTIME_STATE_DELTA 的 JSON Schema，只作为结构约束，不要把 schema 本身输出为结算结果。枚举值与字段名必须保持原文；不得翻译状态值。string 字段不可写成数组或对象，未提供的可选字段应省略，不要写 null。
+<runtime-state-input-schema>
+${JSON.stringify(settlementInputSchema)}
+</runtime-state-input-schema>
 
 ## 关键规则
 
