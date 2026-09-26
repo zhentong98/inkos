@@ -4061,7 +4061,7 @@ describe("PipelineRunner", () => {
       );
     vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(
       createReviseOutput({
-        revisedContent: "Revised body.",
+        revisedContent: "Revised body." + "景".repeat(2600),
         wordCount: "Revised body.".length,
       }),
     );
@@ -4813,7 +4813,7 @@ describe("PipelineRunner", () => {
     const storyDir = join(state.bookDir(bookId), "story");
     const chaptersDir = join(state.bookDir(bookId), "chapters");
     const originalBody = "林越抬手。林越停步。林越转身。林越侧耳。";
-    const revisedBody = "门被风顶开，林越先停在门槛前。\n\n他侧过身，听见墙后那道更轻的呼吸。";
+    const revisedBody = "门被风顶开，林越先停在门槛前。\n\n他侧过身，听见墙后那道更轻的呼吸。" + "景".repeat(2600);
 
     await Promise.all([
       writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
@@ -4888,8 +4888,8 @@ describe("PipelineRunner", () => {
     const chaptersDir = join(fixture.state.bookDir(fixture.bookId), "chapters");
     // Single paragraph, varied sentence openings, no hedge/transition words →
     // zero structural AI tells, so audit counts come only from the LLM audit mocks.
-    const originalBody = "林越推门进去，先看见柜台后那盏没关的灯，他放轻脚步绕过货架。";
-    const revisedBody = "门被风顶开，林越先停在门槛前，听见柜台后那盏灯轻轻晃动。";
+    const originalBody = "林越推门进去，先看见柜台后那盏没关的灯，他放轻脚步绕过货架。" + "景".repeat(2600);
+    const revisedBody = "门被风顶开，林越先停在门槛前，听见柜台后那盏灯轻轻晃动。" + "景".repeat(2600);
 
     await Promise.all([
       writeFile(join(chaptersDir, "0001_Test_Chapter.md"), `# 第1章 Test Chapter\n\n${originalBody}`, "utf-8"),
@@ -4925,6 +4925,104 @@ describe("PipelineRunner", () => {
 
     return { ...fixture, chaptersDir, revisedBody };
   }
+
+  it("reuses a historical revision plan until its preceding snapshot or instructions change", async () => {
+    const { root, runner, state, bookId } = await createRevisionGateFixture("always");
+    const plannerSpy = vi.mocked(PlannerAgent.prototype.planChapter);
+    const originalPlanner = plannerSpy.getMockImplementation()!;
+    let generation = 0;
+    plannerSpy.mockImplementation(async (input) => {
+      const plan = await originalPlanner(input);
+      generation += 1;
+      return {
+        ...plan,
+        memo: { ...plan.memo, goal: `Plan generation ${generation}`, body: [
+          "## 当前任务", "Follow existing evidence.",
+          "## 场景与篇幅预算", "Budget the complete chapter at 3000 characters.",
+          "## 读者此刻在等什么", "An answer to the established evidence question.",
+          "## 该兑现的 / 暂不掀的", "Resolve the open lead.",
+          "## 日常/过渡承担什么任务", "Maintain continuity.",
+          "## 关键抉择过三连问", "Keep motives consistent.",
+          "## 章尾必须发生的改变", "An evidence-based decision.",
+          "## 本章 hook 账", "No new hooks beyond the established chapter plan.",
+          "## 不要做", "No future state.",
+        ].join("\n\n") },
+      };
+    });
+    const auditor = vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValue(createAuditResult({ passed: true, issues: [] }));
+    try {
+      await runner.reviseDraft(bookId, 1, "rework", "Use the native audit.");
+      await runner.reviseDraft(bookId, 1, "rework", "Use the native audit.");
+      // Both the before and after audit must judge the same plan, even though
+      // the first revision replaced live truth and the current chapter body.
+      expect(auditor.mock.calls.map((call) => call[4]?.chapterMemo?.goal)).toEqual([
+        "Plan generation 1", "Plan generation 1", "Plan generation 1", "Plan generation 1",
+      ]);
+      await writeFile(join(state.bookDir(bookId), "story", "snapshots", "0", "current_focus.md"), "Changed preceding focus.");
+      await runner.reviseDraft(bookId, 1, "rework", "Use the native audit.");
+      expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe("Plan generation 2");
+      await runner.reviseDraft(bookId, 1, "rework", "New user brief.");
+      expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe("Plan generation 3");
+      for (const [body, expectedGeneration] of [["Initial specialist guidance.", 4], ["Changed specialist guidance.", 5]] as const) {
+        await runner.runWithAgentContext({ activatedSkills: [{
+          skill: { id: "review-method", name: "Review method", description: "Test method", body, source: "project" }, resources: [],
+        }] }, () => runner.reviseDraft(bookId, 1, "rework", "New user brief."));
+        expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe(`Plan generation ${expectedGeneration}`);
+      }
+      await runner.reviseDraft(bookId, 1, "rework", "New user brief.");
+      expect(auditor.mock.calls.at(-1)?.[4]?.chapterMemo?.goal).toBe("Plan generation 6");
+      const metadataPath = join(state.bookDir(bookId), "story", "runtime", "chapter-0001.plan-cache.json");
+      await rm(metadataPath);
+      await mkdir(metadataPath); // malformed optional cache must not abort native revision
+      await expect(runner.reviseDraft(bookId, 1, "rework", "New user brief.")).resolves.toMatchObject({ applied: true });
+
+
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
+
+  it.each([
+    ["strict", 2057], ["lenient", 2057], ["always", 2057], ["strict", 4000],
+  ] as const)("rejects out-of-budget manual revision even with improved audit (%s, %i)", async (gate, candidateCount) => {
+    const { root, runner, state, bookId, chaptersDir } = await createRevisionGateFixture(gate);
+    const path = join(chaptersDir, "0001_Test_Chapter.md");
+    const original = await readFile(path, "utf-8");
+    const beforeIndex = await state.loadChapterIndex(bookId);
+    const storyDir = join(state.bookDir(bookId), "story");
+    const beforeState = await readFile(join(storyDir, "current_state.md"), "utf-8");
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(createReviseOutput({
+      revisedContent: "修".repeat(candidateCount), wordCount: 3000,
+    }));
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter")
+      .mockResolvedValueOnce(createAuditResult({ passed: false, issues: [CRITICAL_ISSUE] }))
+      .mockResolvedValueOnce(createAuditResult({ passed: true, issues: [] }));
+    try {
+      const result = await runner.reviseDraft(bookId, 1, "rewrite");
+      expect(result.applied).toBe(false);
+      expect(result.skippedReason).toContain(String(candidateCount));
+      expect(result.lengthWarnings).toEqual([expect.stringContaining("2182-3818")]);
+      await expect(readFile(path, "utf-8")).resolves.toBe(original);
+      await expect(state.loadChapterIndex(bookId)).resolves.toEqual(beforeIndex);
+      await expect(readFile(join(storyDir, "current_state.md"), "utf-8")).resolves.toBe(beforeState);
+      await expect(listChapterVersions(state.bookDir(bookId), 1)).resolves.toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
+
+  it("applies length-only repair without relaxing the strict audit gate", async () => {
+    const { root, runner, state, bookId, chaptersDir } = await createRevisionGateFixture();
+    await writeFile(join(chaptersDir, "0001_Test_Chapter.md"), "# Test Chapter\n\n" + "原".repeat(2057));
+    vi.spyOn(ReviserAgent.prototype, "reviseChapter").mockResolvedValue(createReviseOutput({
+      revisedContent: "修".repeat(3000), wordCount: 3000,
+    }));
+    vi.spyOn(ContinuityAuditor.prototype, "auditChapter").mockResolvedValue(createAuditResult({ passed: true, issues: [] }));
+    try {
+      const result = await runner.reviseDraft(bookId, 1);
+      expect(result.applied).toBe(true);
+      expect(result.wordCount).toBe(3000);
+      await expect(readFile(join(chaptersDir, "0001_Test_Chapter.md"), "utf-8")).resolves.toContain("修".repeat(3000));
+      expect((await state.loadChapterIndex(bookId))[0]?.lengthWarnings).toEqual([]);
+    } finally { await rm(root, { recursive: true, force: true }); }
+  }, SLOW_PIPELINE_TEST_TIMEOUT_MS);
 
   const GATE_WARNING_ISSUE: AuditIssue = {
     severity: "warning",
@@ -5173,7 +5271,7 @@ describe("PipelineRunner", () => {
     const storyDir = join(state.bookDir(bookId), "story");
     const chaptersDir = join(state.bookDir(bookId), "chapters");
     const originalBody = "Taryn kept one hand on the annexe key and listened at the door.";
-    const revisedBody = `${originalBody}\n\nHe checked the seal again before he moved.`;
+    const revisedBody = `${originalBody}\n\nHe checked the seal again before he moved. ${"detail ".repeat(1700)}`;
 
     await state.saveBookConfig(bookId, {
       ...(await state.loadBookConfig(bookId)),

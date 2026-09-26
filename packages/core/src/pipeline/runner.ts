@@ -60,6 +60,7 @@ import { persistChapterArtifacts } from "./chapter-persistence.js";
 import { runChapterReviewCycle } from "./chapter-review-cycle.js";
 import { validateChapterTruthPersistence } from "./chapter-truth-validation.js";
 import { loadPersistedPlan, relativeToBookDir, savePersistedPlan } from "./persisted-governed-plan.js";
+import { computeRevisionPlanFingerprint, loadRevisionPlanCache, saveRevisionPlanCache } from "./revision-plan-cache.js";
 import { selectBookReferenceContext } from "../references/reference-context.js";
 import type { ActivatedSkillGuidance } from "../agent/skill-tool.js";
 import { commitAtomicFileSet } from "../utils/atomic-file-set.js";
@@ -233,9 +234,9 @@ export function buildImportFoundationSource(
 
 /** Human-readable description of each manual-revision gate, surfaced in revisionDiagnostics. */
 const REVISION_GATE_STANDARDS: Record<RevisionGate, string> = {
-  strict: "A revision is applied only when blocking, critical, and AI-tell counts do not worsen, and at least blocking or AI-tell issues improve.",
-  lenient: "A revision is applied whenever blocking, critical, and AI-tell counts do not worsen; no improvement is required (lenient gate).",
-  always: "Manual revisions are always applied; audit counts are recorded for reference only (always gate).",
+  strict: "A revision must fit the hard length budget; blocking, critical, and AI-tell counts must not worsen, and blocking/AI-tell issues or an out-of-budget original length must improve.",
+  lenient: "A revision must fit the hard length budget and blocking, critical, and AI-tell counts must not worsen; no improvement is required (lenient gate).",
+  always: "Manual revisions within the hard length budget are applied after state validation; audit counts are recorded for reference only (always gate).",
 };
 
 export interface PipelineConfig {
@@ -1438,6 +1439,15 @@ export class PipelineRunner {
           : { baselineChapter },
       });
 
+      const chapterLengthTarget = chapterMeta.lengthTelemetry?.target ?? book.chapterWordCount;
+      const lengthLanguage = chapterMeta.lengthTelemetry?.countingMode === "en_words"
+        ? "en"
+        : language;
+      const lengthSpec = buildLengthSpec(
+        chapterLengthTarget,
+        lengthLanguage,
+      );
+      const originalOutsideLengthBudget = isOutsideHardRange(countChapterLength(content, lengthSpec.countingMode), lengthSpec);
       const explicitRevisionRequested = Boolean(effectiveExternalContext?.trim())
         || mode === "rewrite"
         || mode === "rework";
@@ -1445,6 +1455,7 @@ export class PipelineRunner {
         preRevision.blockingCount === 0
         && preRevision.aiTellCount === 0
         && !explicitRevisionRequested
+        && !originalOutsideLengthBudget
       ) {
         return {
           chapterNumber: targetChapter,
@@ -1456,14 +1467,6 @@ export class PipelineRunner {
         };
       }
 
-      const chapterLengthTarget = chapterMeta.lengthTelemetry?.target ?? book.chapterWordCount;
-      const lengthLanguage = chapterMeta.lengthTelemetry?.countingMode === "en_words"
-        ? "en"
-        : language;
-      const lengthSpec = buildLengthSpec(
-        chapterLengthTarget,
-        lengthLanguage,
-      );
       const [baselineState, baselineHooks] = await Promise.all([
         readCurrentStateWithFallback(bookDir, "", baselineStoryDir),
         readFile(join(baselineStoryDir, "pending_hooks.md"), "utf-8"),
@@ -1634,11 +1637,14 @@ export class PipelineRunner {
       const aiDidNotWorsen = effectivePostRevision.aiTellCount <= preRevision.aiTellCount;
       const didNotWorsen = blockingDidNotWorsen && criticalDidNotWorsen && aiDidNotWorsen;
       const revisionGate = this.config.revisionGate ?? "strict";
-      const shouldApplyRevision = revisionGate === "always"
+      const auditAllowsRevision = revisionGate === "always"
         ? true
         : revisionGate === "lenient"
           ? didNotWorsen
-          : didNotWorsen && (improvedBlocking || improvedAITells);
+          : didNotWorsen && (improvedBlocking || improvedAITells || originalOutsideLengthBudget);
+      // A cleaner audit never justifies replacing the saved body with a draft
+      // outside the existing hard budget, including for lenient/always gates.
+      const shouldApplyRevision = lengthWarnings.length === 0 && auditAllowsRevision;
       const remainingIssues = effectivePostRevision.revisionBlockingIssues
         .filter((issue) => issue.severity === "warning" || issue.severity === "critical")
         .slice(0, 6)
@@ -1670,7 +1676,8 @@ export class PipelineRunner {
           fixedIssues: [],
           applied: false,
           status: "unchanged",
-          skippedReason: `Manual revision kept original chapter: before blocking=${preRevision.blockingCount}, critical=${preRevision.criticalCount}, aiTell=${preRevision.aiTellCount}; after blocking=${effectivePostRevision.blockingCount}, critical=${effectivePostRevision.criticalCount}, aiTell=${effectivePostRevision.aiTellCount}.`,
+          lengthWarnings,
+          skippedReason: `Manual revision kept original chapter: ${lengthWarnings.length > 0 ? `candidate length ${revisedCount} outside hard budget ${lengthSpec.hardMin}-${lengthSpec.hardMax}; ` : ""}before blocking=${preRevision.blockingCount}, critical=${preRevision.criticalCount}, aiTell=${preRevision.aiTellCount}; after blocking=${effectivePostRevision.blockingCount}, critical=${effectivePostRevision.criticalCount}, aiTell=${effectivePostRevision.aiTellCount}.`,
           auditPassed: effectivePostRevision.auditResult.passed,
           auditIssues: remainingIssues,
           revisionDiagnostics,
@@ -3854,6 +3861,17 @@ ${matrix}`,
       readonly baselineChapter?: number;
     },
   ): Promise<PlanChapterOutput> {
+    const revisionFingerprint = options?.baselineChapter !== undefined
+      && options?.reuseExistingIntentWhenContextMissing
+      // Skills can hydrate additional operation-scoped references at chat time.
+      // Do not reuse or stamp a plan whose guidance is not in the cache key.
+      && !this.currentActivatedSkills()?.length
+      ? await computeRevisionPlanFingerprint(book, bookDir, chapterNumber, options.baselineChapter, externalContext)
+      : undefined;
+    if (revisionFingerprint) {
+      const cached = await loadRevisionPlanCache(bookDir, chapterNumber, revisionFingerprint);
+      if (cached) return cached;
+    }
     if (
       options?.baselineChapter === undefined &&
       options?.reuseExistingIntentWhenContextMissing &&
@@ -3874,6 +3892,16 @@ ${matrix}`,
     // Persist in the new memo format so subsequent compose/write phases can
     // skip the planner LLM call when no new context is supplied.
     await savePersistedPlan(bookDir, plan);
+    if (revisionFingerprint && options?.baselineChapter !== undefined
+      && revisionFingerprint === await computeRevisionPlanFingerprint(book, bookDir, chapterNumber, options.baselineChapter, externalContext)
+      && await loadPersistedPlan(bookDir, chapterNumber)) {
+      await saveRevisionPlanCache(bookDir, chapterNumber, revisionFingerprint).catch(() => {
+        this.logWarn(book.language ?? "zh", {
+          zh: "修订计划缓存未能写入，下次将重新规划；本次仍使用刚生成的计划。",
+          en: "Revision plan cache could not be saved; the next revision will re-plan. Continuing with the freshly generated plan.",
+        });
+      });
+    }
     return plan;
   }
 
